@@ -49,10 +49,12 @@ def parse_questions_json(raw: str | bytes) -> list[QuestionRequest]:
             raise ValueError("Every question must be a JSON object")
         question_id = item.get("id", item.get("question_id", ""))
         question = item.get("question", item.get("text", ""))
+        category = item.get("category", "")
         if not question_id or not question:
             raise ValueError("Every question needs an id and question text")
         questions.append(QuestionRequest(
             question_id=str(question_id),
             question=str(question),
+            category=str(category),
         ))
     return _validate_unique(questions)

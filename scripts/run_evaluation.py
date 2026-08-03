@@ -103,11 +103,11 @@ def compute_metrics(
 
 def main():
     parser = argparse.ArgumentParser(description="FULLSCAN-QA Evaluation")
-    parser.add_argument("pdf", type=Path, help="Path to the PDF document")
+    parser.add_argument("document", type=Path, help="Path to the PDF or TXT document")
     parser.add_argument("eval_file", type=Path, help="JSONL evaluation file")
     parser.add_argument(
-        "-m", "--mode", default="FULLSCAN_OPERATOR",
-        choices=["FULLSCAN_OPERATOR", "DIRECT_CONTEXT", "SUMMARY_MAP_REDUCE", "REFINE"],
+        "-m", "--mode", default="ADAPTIVE_HIERARCHICAL",
+        choices=["ADAPTIVE_HIERARCHICAL"],
     )
     parser.add_argument("-o", "--output", type=Path, default=Path("eval_results"))
     args = parser.parse_args()
@@ -133,7 +133,7 @@ def main():
     async def run():
         pipeline = FullScanPipeline(settings)
         try:
-            metadata, chunks = await pipeline.process_document(args.pdf)
+            metadata, chunks = await pipeline.process_document(args.document)
             run_result = await pipeline.answer_questions(
                 metadata.document_id, questions, mode=mode
             )

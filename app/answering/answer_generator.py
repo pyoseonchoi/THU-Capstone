@@ -64,7 +64,7 @@ class AnswerGenerator:
         )
 
         op_summary = json.dumps(
-            operation_result.model_dump(mode="json"),
+            self._compact_operation_result(operation_result),
             ensure_ascii=False,
         )
 
@@ -84,6 +84,7 @@ class AnswerGenerator:
             f"Operator: {plan.operator.value}\n"
             f"Entity type: {plan.entity_type}\n"
             f"Target fields: {plan.target_fields}\n"
+            f"Required answer components: {plan.return_fields}\n"
             f"Conditions: {[c.model_dump() for c in plan.conditions]}\n\n"
             f"OPERATION RESULT:\n{op_summary}\n\n"
             f"EVIDENCE:\n{evidence_summary}\n\n"
@@ -110,6 +111,58 @@ class AnswerGenerator:
             self._tracker.record(response.usage)
 
         return self._parse_response(response.content, operation_result)
+
+    async def refine(
+        self,
+        plan: QueryPlan,
+        draft_answer: str,
+        operation_result: OperationResult,
+        evidence_items: list[EvidenceItem],
+    ) -> tuple[str, str]:
+        """Run one bounded completeness pass for synthesis/comparison answers."""
+        evidence_summary = format_evidence_context(
+            evidence_items,
+            lambda item: (
+                f"- [{item.evidence_id}] p.{item.page_start}: {item.claim} "
+                f"(quote: \"{item.exact_quote[:120]}\")"
+            ),
+            preferred_ids=operation_result.supporting_evidence_ids,
+            max_characters=48_000,
+        )
+        user_msg = (
+            f"QUESTION: {plan.original_question}\n\n"
+            f"DRAFT ANSWER:\n{draft_answer}\n\n"
+            f"REQUIRED COMPONENTS: {plan.return_fields or plan.target_fields}\n\n"
+            f"EVIDENCE ACROSS THE DOCUMENT:\n{evidence_summary}\n\n"
+            "Refine the draft once. Preserve supported claims, add missing requested "
+            "components and representative examples, and remove unsupported claims. "
+            "Return JSON with final_answer and answer_with_evidence."
+        )
+        response = await self._router.chat(
+            [
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            stage="answer",
+            json_mode=True,
+            max_tokens=3072,
+            question_ids=[plan.question_id],
+        )
+        if response.usage:
+            self._tracker.record(response.usage)
+        return self._parse_response(response.content, operation_result)
+
+    @staticmethod
+    def _compact_operation_result(operation_result: OperationResult) -> dict:
+        """Bound synthesis tables while preserving document-wide distribution."""
+        payload = operation_result.model_dump(mode="json")
+        rows = payload.get("result_table", [])
+        if len(rows) <= 80:
+            return payload
+        step = len(rows) / 80
+        payload["result_table"] = [rows[int(index * step)] for index in range(80)]
+        payload["omitted_result_rows"] = len(rows) - 80
+        return payload
 
     def _parse_response(
         self,

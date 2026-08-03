@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -14,15 +15,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.question_io import parse_questions_json, parse_questions_text  # noqa: E402
 
+
+def _default_api_url() -> str:
+    configured = os.getenv("FULLSCAN_API_URL")
+    if configured:
+        return configured
+    for candidate in ("http://localhost:8000", "http://localhost:8001"):
+        try:
+            response = httpx.get(f"{candidate}/health", timeout=0.5)
+            if response.is_success and str(response.json().get("version", "")).startswith("3."):
+                return candidate
+        except (httpx.HTTPError, ValueError):
+            continue
+    return "http://localhost:8000"
+
 st.set_page_config(page_title="FULLSCAN-QA", layout="wide")
 st.title("FULLSCAN-QA")
-st.caption("Operator-aware exhaustive PDF/TXT QA. Every chunk is processed.")
+st.caption("Adaptive exhaustive PDF/TXT QA")
 
 st.sidebar.header("Configuration")
-api_url = st.sidebar.text_input("API URL", value="http://localhost:8000")
-pipeline_mode = st.sidebar.selectbox(
-    "Pipeline Mode",
-    ["FULLSCAN_OPERATOR", "DIRECT_CONTEXT", "SUMMARY_MAP_REDUCE", "REFINE"],
+api_url = st.sidebar.text_input(
+    "API URL",
+    value=_default_api_url(),
 )
 if st.sidebar.button("Refresh Broker Usage"):
     try:
@@ -59,7 +73,11 @@ with tab_upload:
                         "file": (
                             uploaded_file.name,
                             uploaded_file.getvalue(),
-                            "application/pdf",
+                            (
+                                "text/plain"
+                                if uploaded_file.name.lower().endswith(".txt")
+                                else "application/pdf"
+                            ),
                         )
                     },
                     timeout=600,
@@ -70,7 +88,7 @@ with tab_upload:
                 st.success("Document parsed successfully.")
                 col1, col2 = st.columns(2)
                 col1.metric("Pages / Segments", data["page_count"])
-                col2.metric("Chunks", data["chunk_count"])
+                col2.metric("Compiled Records", data["chunk_count"])
             except Exception as exc:
                 st.error(f"Upload failed: {exc}")
 
@@ -131,20 +149,20 @@ with tab_query:
                         json={
                             "document_id": st.session_state["document_id"],
                             "questions": questions,
-                            "pipeline_mode": pipeline_mode,
+                            "pipeline_mode": "ADAPTIVE_HIERARCHICAL",
                             "include_diagnostics": True,
                         },
                         timeout=30,
                     )
                     response.raise_for_status()
                     job_id = response.json()["job_id"]
-                    progress = st.progress(0.0, text="Planning questions...")
+                    progress = st.progress(0.0, text="Compiling questions...")
 
                     while True:
                         elapsed = time.time() - started
-                        if elapsed > 3600:
+                        if elapsed > 7200:
                             raise TimeoutError(
-                                "The job exceeded the 60 minute UI limit."
+                                "The job exceeded the 120 minute UI limit."
                             )
                         status_response = httpx.get(
                             f"{api_url}/answer-jobs/{job_id}", timeout=30
@@ -154,10 +172,18 @@ with tab_query:
                         total = job.get("total", 0)
                         processed = job.get("processed", 0)
                         ratio = processed / total if total else 0.0
+                        stage = job.get("stage", "compiling")
+                        stage_labels = {
+                            "compiling": "Compiling",
+                            "mapping": "Mapping",
+                            "repairing": "Repairing",
+                            "answering": "Answering",
+                        }
+                        stage_label = stage_labels.get(stage, stage.title())
                         progress.progress(
                             min(1.0, ratio),
                             text=(
-                                f"Mapped {processed}/{total} batches; "
+                                f"{stage_label} {processed}/{total}; "
                                 f"failures queued: {job.get('failed', 0)}"
                             ),
                         )

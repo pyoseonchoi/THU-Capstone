@@ -12,9 +12,11 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from app.field_names import canonical_field_name
 from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.logging_config import get_logger
+from app.reduction.normalizer import normalize_extracted_value
 from app.schemas import (
     ChunkMapResult,
     DocumentChunk,
@@ -113,12 +115,14 @@ class EvidenceMapper:
         self,
         chunk: DocumentChunk,
         plans: list[QueryPlan],
+        *,
+        model_override: str | None = None,
     ) -> list[ChunkMapResult]:
         """Extract evidence from one chunk for the given questions.
 
         Returns one ChunkMapResult per question.
         """
-        model = self._router.get_model("mapper")
+        model = model_override or self._router.get_model("mapper")
         prompt_version = self._prompt_version
 
         # Check cache
@@ -156,9 +160,10 @@ class EvidenceMapper:
                 messages,
                 stage="mapper",
                 json_mode=True,
-                max_tokens=4096,
+                max_tokens=min(8192, max(4096, 1024 * len(plans))),
                 chunk_id=chunk.chunk_id,
                 question_ids=question_ids,
+                model_override=model_override,
             )
             if response.usage:
                 self._tracker.record(response.usage)
@@ -256,6 +261,33 @@ class EvidenceMapper:
                 if not isinstance(ei, dict):
                     continue
                 try:
+                    field_name = canonical_field_name(
+                        _as_string(ei.get("field_name", ""))
+                    )
+                    plan = plan_map[qid]
+                    extraction_field = next(
+                        (
+                            field
+                            for field in plan.extraction_fields
+                            if field.field_name == field_name
+                        ),
+                        None,
+                    )
+                    raw_value = _as_string(ei.get("raw_value", ""))
+                    exact_quote = _as_string(ei.get("exact_quote", ""))
+                    unit = _as_string(ei.get("unit", ""))
+                    normalized_value = normalize_extracted_value(
+                        raw_value,
+                        ei.get("normalized_value"),
+                        expected_type=(
+                            extraction_field.expected_type
+                            if extraction_field is not None
+                            else ""
+                        ),
+                        from_unit=unit,
+                        target_unit=plan.normalized_unit,
+                        supporting_text=exact_quote,
+                    )
                     item_page_start = _bounded_page(
                         ei.get("page_start", ei.get("page")),
                         chunk,
@@ -274,12 +306,12 @@ class EvidenceMapper:
                         page_end=max(item_page_start, item_page_end),
                         entity_name=_as_string(ei.get("entity_name", "")),
                         entity_id=_as_string(ei.get("entity_id", "")),
-                        field_name=_as_string(ei.get("field_name", "")),
-                        raw_value=_as_string(ei.get("raw_value", "")),
-                        normalized_value=ei.get("normalized_value"),
-                        unit=_as_string(ei.get("unit", "")),
+                        field_name=field_name,
+                        raw_value=raw_value,
+                        normalized_value=normalized_value,
+                        unit=unit,
                         claim=_as_string(ei.get("claim", "")),
-                        exact_quote=_as_string(ei.get("exact_quote", "")),
+                        exact_quote=exact_quote,
                         relevance=_bounded_float(ei.get("relevance", 0.5)),
                         confidence=_bounded_float(ei.get("confidence", 0.5)),
                         uncertainty=_as_string(ei.get("uncertainty", "")),

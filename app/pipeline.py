@@ -1,87 +1,90 @@
-"""Main pipeline orchestrator.
+"""V3 adaptive exhaustive pipeline.
 
-Connects all stages: parsing → chunking → planning → mapping →
-normalization → reduction → answer generation → verification.
-
-Supports FULLSCAN_OPERATOR (main) and baseline modes.
+The runtime has one execution path: compile the complete document, answer
+typed structured questions in Python, map every record for unresolved
+questions, then reduce and synthesize from validated evidence.
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.answering.answer_generator import AnswerGenerator
-from app.chunking.structural_chunker import chunk_document, generate_chunk_manifest
 from app.config import PipelineMode, Settings
 from app.exceptions import LLMConfigurationError, UnsupportedDocumentError
 from app.llm.base import BaseLLMClient
 from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.logging_config import get_logger
-from app.mapping.batch_mapper import BatchMapper
-from app.mapping.evidence_mapper import EvidenceMapper
-from app.parsing.pdf_parser import parse_pdf, save_parsed_output
-from app.parsing.structure_detector import detect_sections
+from app.parsing.pdf_parser import (
+    load_parsed_output,
+    parse_pdf,
+    save_parsed_output,
+)
 from app.parsing.text_parser import parse_text
-from app.planning.question_planner import QuestionPlanner
-from app.reduction.deduplicator import deduplicate_entities
-from app.reduction.deterministic_reducer import reduce
-from app.reduction.evidence_ledger import build_ledger
 from app.schemas import (
+    CoverageReport,
     DocumentChunk,
     DocumentMetadata,
+    OperationResult,
+    Operator,
     PipelineAnswer,
     PipelineRun,
     QuestionRequest,
 )
 from app.storage.run_store import RunStore
 from app.submission import IncrementalSubmissionWriter
-from app.verification.claim_verifier import ClaimVerifier
-from app.verification.coverage_verifier import verify_coverage
+from app.v3.answerer import V3Answerer
+from app.v3.compiler import all_mapping_records, compile_document
+from app.v3.exhaustive_mapper import ExhaustiveMapper
+from app.v3.models import (
+    CompiledDocument,
+    ExecutionResult,
+    Strategy,
+    V3MapResult,
+    V3QuestionPlan,
+)
+from app.v3.question_compiler import compile_questions
+from app.v3.reducers import (
+    build_evidence_packet,
+    reduce_absence,
+    reduce_mapped_structure,
+    status_counts,
+)
+from app.v3.structured_executor import execute_structured
 
-logger = get_logger("pipeline")
+logger = get_logger("pipeline.v3")
+ProgressCallback = Callable[[str, int, int, int], None]
 
 
 class FullScanPipeline:
-    """Main FULLSCAN-QA pipeline orchestrator."""
+    """Question-independent compilation plus adaptive exhaustive reduction."""
 
     def __init__(
         self,
         settings: Settings,
         llm_client: Optional[BaseLLMClient] = None,
-    ):
+    ) -> None:
         self._settings = settings
-        policy_warnings = settings.model_policy_warnings()
-        for warning in policy_warnings:
+        warnings = settings.model_policy_warnings()
+        for warning in warnings:
             logger.warning("Model policy: %s", warning)
-        if settings.evaluation_mode and policy_warnings:
-            raise LLMConfigurationError("; ".join(policy_warnings))
-        self._usage_tracker = UsageTracker()
-
+        if settings.evaluation_mode and warnings:
+            raise LLMConfigurationError("; ".join(warnings))
         self._router = LLMRouter(settings, client=llm_client)
-        self._planner = QuestionPlanner(self._router, self._usage_tracker)
-        self._mapper = EvidenceMapper(
-            self._router, self._usage_tracker,
-            cache_dir=settings.cache_dir,
-            prompt_version=settings.prompt_version_mapper,
-        )
-        self._batch_mapper = BatchMapper(self._mapper, settings)
-        self._answer_gen = AnswerGenerator(self._router, self._usage_tracker)
-        self._verifier = ClaimVerifier(self._router, self._usage_tracker)
+        self._tracker = UsageTracker()
+        self._mapper = ExhaustiveMapper(self._router, self._tracker, settings)
+        self._answerer = V3Answerer(self._router, self._tracker)
         self._store = RunStore(settings)
 
     async def process_document(
-        self, document_path: Path
+        self,
+        document_path: Path,
     ) -> tuple[DocumentMetadata, list[DocumentChunk]]:
-        """Parse and chunk a supported PDF or TXT document.
-
-        Returns:
-            Tuple of (metadata, chunks).
-        """
-        logger.info("Parsing document: %s", document_path)
+        """Parse and compile every page into terminal V3 mapping records."""
         extension = document_path.suffix.lower()
         if extension == ".pdf":
             metadata, pages = parse_pdf(document_path)
@@ -91,30 +94,66 @@ class FullScanPipeline:
             raise UnsupportedDocumentError(
                 f"Supported document types are PDF and TXT, got: {extension}"
             )
-        save_parsed_output(metadata, pages, self._settings.parsed_dir)
 
-        sections = detect_sections(pages)
-        chunks = chunk_document(
-            metadata.document_id,
-            pages,
-            sections,
-            target_tokens=self._settings.chunk_target_tokens,
-            overlap_tokens=self._settings.chunk_overlap_tokens,
-        )
+        save_parsed_output(metadata, pages, self._settings.parsed_dir)
+        compiled = compile_document(metadata.document_id, pages)
+        records = all_mapping_records(compiled)
+        chunks = [
+            self._record_chunk(metadata.document_id, index, record)
+            for index, record in enumerate(records)
+        ]
         metadata.chunk_count = len(chunks)
 
-        # Persist
         self._store.save_document_metadata(metadata)
         self._store.save_chunks(metadata.document_id, chunks)
-
-        manifest = generate_chunk_manifest(chunks)
-        self._store.save_artifact(metadata.document_id, "chunk_manifest", manifest)
-
+        self._store.save_compiled_document(compiled)
+        self._store.save_artifact(
+            metadata.document_id,
+            "v3_compile_manifest",
+            {
+                "compiler_version": compiled.compiler_version,
+                "record_kind": compiled.record_kind,
+                "catalog_records": len(compiled.records),
+                "supplementary_records": len(compiled.supplementary_records),
+                "mapping_records": len(records),
+                "warnings": compiled.warnings,
+            },
+        )
         logger.info(
-            "Document ready: %d pages, %d chunks",
-            metadata.page_count, len(chunks),
+            "V3 document compiled: %d pages, %d catalog records, %d mapping records",
+            metadata.page_count,
+            len(compiled.records),
+            len(records),
         )
         return metadata, chunks
+
+    @staticmethod
+    def _record_chunk(document_id: str, index: int, record) -> DocumentChunk:
+        chunk = DocumentChunk(
+            document_id=document_id,
+            chunk_id=record.record_id,
+            chunk_index=index,
+            section_id=record.record_id,
+            section_title=record.title,
+            section_titles=[record.title],
+            page_start=record.page_start,
+            page_end=record.page_end,
+            text=record.text,
+        )
+        chunk.compute_hash()
+        return chunk
+
+    def _load_or_compile(self, document_id: str) -> CompiledDocument | None:
+        compiled = self._store.load_compiled_document(document_id)
+        if compiled is not None:
+            return compiled
+        path = self._settings.parsed_dir / f"{document_id}_parsed.json"
+        if not path.exists():
+            return None
+        _, pages = load_parsed_output(path)
+        compiled = compile_document(document_id, pages)
+        self._store.save_compiled_document(compiled)
+        return compiled
 
     async def answer_questions(
         self,
@@ -122,298 +161,231 @@ class FullScanPipeline:
         questions: list[QuestionRequest],
         *,
         mode: Optional[PipelineMode] = None,
-        progress_callback: Optional[callable] = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> PipelineRun:
-        """Answer questions about a previously parsed document.
-
-        Args:
-            document_id: Document ID from process_document.
-            questions: Questions to answer.
-            mode: Pipeline mode (default from settings).
-            progress_callback: Optional progress callback.
-
-        Returns:
-            Complete PipelineRun with answers and diagnostics.
-        """
-        mode = mode or self._settings.pipeline_mode
-        start_time = time.perf_counter()
-
+        """Answer all questions through the sole adaptive-hierarchical V3 route."""
+        del mode
+        self._tracker = UsageTracker()
+        self._mapper = ExhaustiveMapper(self._router, self._tracker, self._settings)
+        self._answerer = V3Answerer(self._router, self._tracker)
+        started = time.perf_counter()
         run = PipelineRun(
             document_id=document_id,
-            pipeline_mode=mode.value,
+            pipeline_mode="ADAPTIVE_HIERARCHICAL_V3",
             started_at=datetime.now(timezone.utc),
         )
-        submission_writer = IncrementalSubmissionWriter(
+        writer = IncrementalSubmissionWriter(
             self._settings.runs_dir / f"{run.run_id}_submission.json",
             team=self._settings.team_name,
             notes=self._settings.submission_notes,
         )
-        run.submission_path = str(submission_writer.initialize(questions))
-
-        # Load chunks
-        chunks = self._store.load_chunks(document_id)
-        if not chunks:
-            run.warnings.append("No chunks found for document")
+        run.submission_path = str(writer.initialize(questions))
+        compiled = self._load_or_compile(document_id)
+        if compiled is None:
+            run.warnings.append("No compiled or parsed document found")
             run.completed_at = datetime.now(timezone.utc)
+            run.submission_path = str(writer.finalize(run))
+            self._store.save_run(run)
             return run
 
-        metadata = self._store.load_document_metadata(document_id)
-        quality = self._store.load_quality_records(document_id)
+        records = all_mapping_records(compiled)
+        expected_record_ids = {record.record_id for record in records}
+        plans = compile_questions(questions)
+        deterministic: dict[str, ExecutionResult] = {}
+        unresolved: list[V3QuestionPlan] = []
+        if progress_callback:
+            progress_callback("compiling", 0, len(plans), 0)
+        for index, plan in enumerate(plans, start=1):
+            result = execute_structured(plan, compiled)
+            if result is None:
+                unresolved.append(plan)
+            else:
+                deterministic[plan.question_id] = result
+            if progress_callback:
+                progress_callback("compiling", index, len(plans), 0)
 
-        if mode == PipelineMode.FULLSCAN_OPERATOR:
-            await self._run_fullscan(
-                run,
-                chunks,
-                questions,
-                metadata,
-                quality,
-                progress_callback,
-                submission_writer,
-            )
-        elif mode == PipelineMode.DIRECT_CONTEXT:
-            await self._run_direct_context(run, chunks, questions)
-        elif mode == PipelineMode.SUMMARY_MAP_REDUCE:
-            await self._run_summary_mapreduce(run, chunks, questions)
-        elif mode == PipelineMode.REFINE:
-            await self._run_refine(run, chunks, questions)
+        map_results = await self._mapper.map_document(
+            compiled,
+            unresolved,
+            progress_callback=progress_callback,
+        )
+        callback = None
+        if progress_callback:
 
+            def repair_progress(
+                _stage: str,
+                done: int,
+                total: int,
+                failed: int,
+            ) -> None:
+                progress_callback("repairing", done, total, failed)
+
+            callback = repair_progress
+        map_results = await self._mapper.repair_failures(
+            compiled,
+            unresolved,
+            map_results,
+            progress_callback=callback,
+            model_override=self._settings.answer_model,
+        )
+        self._store.save_artifact(
+            run.run_id,
+            "v3_question_plans",
+            [plan.model_dump(mode="json") for plan in plans],
+        )
+
+        for index, plan in enumerate(plans, start=1):
+            try:
+                result = deterministic.get(plan.question_id)
+                question_results = [
+                    item for item in map_results if item.question_id == plan.question_id
+                ]
+                if result is None:
+                    result, question_results = await self._reduce_question(
+                        plan,
+                        question_results,
+                        expected_record_ids,
+                    )
+                answer = self._pipeline_answer(
+                    plan,
+                    result,
+                    question_results,
+                    compiled,
+                )
+            except Exception as exc:
+                logger.exception("V3 question %s failed", plan.question_id)
+                answer = PipelineAnswer(
+                    question_id=plan.question_id,
+                    final_answer=f"Error: {exc}",
+                    operator=self._operator(plan),
+                    warnings=[str(exc)],
+                )
+            run.answers.append(answer)
+            writer.update(answer)
+            if progress_callback:
+                progress_callback("answering", index, len(plans), 0)
+
+        self._store.save_artifact(
+            run.run_id,
+            "v3_map_results",
+            [result.model_dump(mode="json") for result in map_results],
+        )
         run.completed_at = datetime.now(timezone.utc)
-        run.usage = self._usage_tracker.records
-        run.total_input_tokens = self._usage_tracker.total_input_tokens
-        run.total_output_tokens = self._usage_tracker.total_output_tokens
-        run.total_latency_ms = (time.perf_counter() - start_time) * 1000
-        run.submission_path = str(submission_writer.finalize(run))
-
+        run.usage = self._tracker.records
+        run.total_input_tokens = self._tracker.total_input_tokens
+        run.total_output_tokens = self._tracker.total_output_tokens
+        run.total_latency_ms = (time.perf_counter() - started) * 1000
+        run.submission_path = str(writer.finalize(run))
         self._store.save_run(run)
         return run
 
-    async def _run_fullscan(
+    async def _reduce_question(
         self,
-        run: PipelineRun,
-        chunks: list[DocumentChunk],
-        questions: list[QuestionRequest],
-        metadata: Optional[DocumentMetadata],
-        quality: list,
-        progress_callback: Optional[callable],
-        submission_writer: IncrementalSubmissionWriter,
-    ) -> None:
-        """Run the FULLSCAN_OPERATOR pipeline."""
-        # 1. Plan all questions
-        logger.info("Planning %d questions", len(questions))
-        plans = await self._planner.plan_batch(questions)
-
-        # 2. Exhaustive mapping over ALL chunks
-        logger.info("Mapping %d chunks × %d questions", len(chunks), len(plans))
-        map_results = await self._batch_mapper.map_all_chunks(
-            chunks, plans, progress_callback=progress_callback
-        )
-
-        # 3. Process each question
-        for plan in plans:
-            try:
-                answer = await self._process_single_question(
-                    plan, chunks, map_results, quality
+        plan: V3QuestionPlan,
+        question_results: list[V3MapResult],
+        expected_record_ids: set[str],
+    ) -> tuple[ExecutionResult, list[V3MapResult]]:
+        if plan.strategy == Strategy.ABSENCE_MATRIX:
+            result = reduce_absence(plan, question_results, expected_record_ids)
+            if result is None:
+                result = reduce_absence(
+                    plan,
+                    question_results,
+                    expected_record_ids,
+                    allow_partial=True,
                 )
-                run.answers.append(answer)
-                submission_writer.update(answer)
-            except Exception as exc:
-                logger.error("Failed to process question %s: %s", plan.question_id, exc)
-                error_answer = PipelineAnswer(
-                    question_id=plan.question_id,
-                    final_answer=f"Error: {exc}",
-                    warnings=[str(exc)],
-                    operator=plan.operator,
-                    plan=plan,
-                )
-                run.answers.append(error_answer)
-                submission_writer.update(error_answer)
+        else:
+            packet = build_evidence_packet(plan, question_results, expected_record_ids)
+            result = reduce_mapped_structure(plan, packet)
 
-    async def _process_single_question(
+        if result is not None:
+            return result, question_results
+        packet = build_evidence_packet(plan, question_results, expected_record_ids)
+        return await self._answerer.generate(plan, packet), question_results
+
+    def _pipeline_answer(
         self,
-        plan,
-        chunks,
-        map_results,
-        quality,
+        plan: V3QuestionPlan,
+        result: ExecutionResult,
+        map_results: list[V3MapResult],
+        compiled: CompiledDocument,
     ) -> PipelineAnswer:
-        """Process a single question through reduction → answer → verify."""
-        qid = plan.question_id
-
-        # Filter results for this question
-        q_results = [r for r in map_results if r.question_id == qid]
-
-        # Collect evidence items
-        all_evidence = []
-        for r in q_results:
-            all_evidence.extend(r.evidence_items)
-
-        # Deduplicate entities
-        entities, dedup_decisions = deduplicate_entities(all_evidence)
-
-        # Build evidence ledger
-        ledger = build_ledger(qid, plan, q_results, entities, len(chunks))
-
-        # Run deterministic reducer
-        operation_result = reduce(plan, ledger)
-
-        # Coverage verification
-        coverage = verify_coverage(plan, chunks, map_results, entities, quality)
-
-        # Generate answer
-        final_answer, answer_with_evidence = await self._answer_gen.generate(
-            plan, operation_result, all_evidence, coverage
+        operator = self._operator(plan)
+        pages = sorted(set(result.source_pages))
+        evidence_note = (
+            "Validated source pages/segments: " + ", ".join(map(str, pages)) if pages else ""
         )
-
-        # Verify claims
-        verifications = []
-        try:
-            final_answer, verifications = await self._verifier.verify_and_repair(
-                final_answer, all_evidence, operation_result, qid
-            )
-        except Exception as exc:
-            logger.warning("Verification failed for %s: %s", qid, exc)
-
+        final_answer = result.answer.strip() or "Error: grounded answer unavailable"
         return PipelineAnswer(
-            question_id=qid,
+            question_id=plan.question_id,
             final_answer=final_answer,
-            answer_with_evidence=answer_with_evidence,
-            operator=plan.operator,
-            plan=plan,
-            operation_result=operation_result,
-            coverage=coverage,
-            verification=verifications,
-            warnings=operation_result.warnings + coverage.warnings,
+            answer_with_evidence=evidence_note,
+            operator=operator,
+            operation_result=OperationResult(
+                question_id=plan.question_id,
+                operator=operator,
+                result_value=result.answer or None,
+                computation_detail=f"V3 strategy: {plan.strategy.value}",
+                source_pages=pages,
+                warnings=result.warnings,
+            ),
+            coverage=self._coverage(plan, map_results, compiled),
+            warnings=result.warnings,
         )
 
-    # ----- Baseline modes -----
-
-    async def _run_direct_context(
-        self, run, chunks, questions
-    ) -> None:
-        """Baseline A: stuff document context into prompt and answer in parallel."""
-        import asyncio
-
-        full_text = "\n\n".join(c.text for c in chunks)
-        # Truncate context to ~30k chars (~7.5k tokens) for fast local inference
-        max_chars = 30_000
-        context = full_text[:max_chars]
-
-        async def _answer_one(q):
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Answer the question using only the provided document. "
-                        "Be concise and precise."
-                    ),
-                },
-                {"role": "user", "content": f"DOCUMENT:\n{context}\n\nQUESTION: {q.question}"},
-            ]
-            resp = await self._router.chat(
-                messages, stage="answer", max_tokens=1024, question_ids=[q.question_id]
+    @staticmethod
+    def _operator(plan: V3QuestionPlan) -> Operator:
+        if plan.strategy == Strategy.ABSENCE_MATRIX:
+            return Operator.ABSENCE
+        if plan.strategy == Strategy.CLAIM_COMPARE:
+            return Operator.COMPARE
+        if plan.strategy == Strategy.HIERARCHICAL_SYNTHESIS:
+            return (
+                Operator.GENERAL_SYNTHESIS
+                if plan.category == "global_synthesis"
+                else Operator.MULTI_HOP
             )
-            if resp.usage:
-                self._usage_tracker.record(resp.usage)
-            return PipelineAnswer(
-                question_id=q.question_id,
-                final_answer=resp.content,
-                answer_with_evidence=resp.content,
+        if plan.strategy == Strategy.EXHAUSTIVE_LOOKUP:
+            return Operator.LOOKUP
+        operation = str(plan.metadata.get("operation", ""))
+        return Operator.ARGMAX if operation == "argmax" else Operator.FILTER_COUNT_LIST
+
+    @staticmethod
+    def _coverage(
+        plan: V3QuestionPlan,
+        results: list[V3MapResult],
+        compiled: CompiledDocument,
+    ) -> CoverageReport:
+        total = len(all_mapping_records(compiled))
+        if not results:
+            return CoverageReport(
+                total_pages=compiled.page_count,
+                parsed_pages=compiled.page_count,
+                total_chunks=total,
+                successful_mappings=total,
+                mapped_chunks=total,
+                coverage_percentage=100.0,
+                required_percentage=100.0,
+                requirement_met=True,
             )
-
-        tasks = [_answer_one(q) for q in questions]
-        answers = await asyncio.gather(*tasks)
-        run.answers.extend(answers)
-
-    async def _run_summary_mapreduce(
-        self, run, chunks, questions
-    ) -> None:
-        """Baseline B: summarize each chunk, then synthesize."""
-        import asyncio
-
-        for q in questions:
-            summaries: list[str] = []
-            sem = asyncio.Semaphore(self._settings.max_concurrent_requests)
-
-            async def summarize(chunk):
-                async with sem:
-                    msgs = [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Summarize this text focusing on answering the "
-                                "question. Be concise."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": f"QUESTION: {q.question}\n\nTEXT:\n{chunk.text}",
-                        },
-                    ]
-                    resp = await self._router.chat(msgs, stage="mapper", max_tokens=512)
-                    if resp.usage:
-                        self._usage_tracker.record(resp.usage)
-                    return resp.content
-
-            tasks = [summarize(c) for c in chunks]
-            summaries = await asyncio.gather(*tasks)
-
-            combined = "\n\n".join(f"[Chunk {i+1}]: {s}" for i, s in enumerate(summaries))
-            msgs = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Synthesize these summaries to answer the question "
-                        "precisely."
-                    ),
-                },
-                {"role": "user", "content": f"QUESTION: {q.question}\n\nSUMMARIES:\n{combined}"},
-            ]
-            resp = await self._router.chat(
-                msgs,
-                stage="answer",
-                max_tokens=2048,
-                question_ids=[q.question_id],
-            )
-            if resp.usage:
-                self._usage_tracker.record(resp.usage)
-
-            run.answers.append(PipelineAnswer(
-                question_id=q.question_id,
-                final_answer=resp.content,
-                answer_with_evidence=resp.content,
-            ))
-
-    async def _run_refine(
-        self, run, chunks, questions
-    ) -> None:
-        """Baseline C: sequential draft refinement."""
-        for q in questions:
-            draft = ""
-            for i, chunk in enumerate(chunks):
-                msgs = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Refine the draft answer using new evidence. "
-                            "Preserve existing correct info."
-                        ),
-                    },
-                    {"role": "user", "content": (
-                        f"QUESTION: {q.question}\n\n"
-                        f"CURRENT DRAFT: {draft or '(empty)'}\n\n"
-                        f"NEW EVIDENCE (chunk {i+1}/{len(chunks)}):\n{chunk.text}"
-                    )},
-                ]
-                resp = await self._router.chat(msgs, stage="answer", max_tokens=1024)
-                if resp.usage:
-                    self._usage_tracker.record(resp.usage)
-                draft = resp.content
-
-            run.answers.append(PipelineAnswer(
-                question_id=q.question_id,
-                final_answer=draft,
-                answer_with_evidence=draft,
-            ))
+        counts = status_counts(plan.question_id, results)
+        successful = counts["evidence_found"] + counts["no_evidence"]
+        failed = counts["parse_failed"] + counts["llm_failed"]
+        percentage = round(successful / total * 100, 2) if total else 100.0
+        return CoverageReport(
+            total_pages=compiled.page_count,
+            parsed_pages=compiled.page_count,
+            total_chunks=total,
+            successful_mappings=successful,
+            no_evidence_chunks=counts["no_evidence"],
+            uncertain_chunks=counts["uncertain"],
+            failed_chunks=failed,
+            coverage_percentage=percentage,
+            required_percentage=100.0,
+            requirement_met=successful == total,
+            mapped_chunks=len(results),
+            missing_chunks=max(0, total - len(results)),
+        )
 
     async def close(self) -> None:
-        """Clean up resources."""
         await self._router.close()

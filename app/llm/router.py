@@ -60,9 +60,10 @@ class LLMRouter:
         json_mode: bool = False,
         chunk_id: str = "",
         question_ids: list[str] | None = None,
+        model_override: str | None = None,
     ) -> LLMResponse:
         """Route a chat request to the correct model for the stage."""
-        model = self.get_model(stage)
+        model = model_override or self.get_model(stage)
         logger.debug("Routing stage=%s to model=%s", stage, model)
         return await self._client.chat(
             messages,

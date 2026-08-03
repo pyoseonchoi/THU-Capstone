@@ -24,6 +24,13 @@ def test_json_accepts_grader_shape():
     assert questions[0].question_id == "q01"
 
 
+def test_json_preserves_optional_category_hint():
+    questions = parse_questions_json(
+        '[{"id":"d10","category":"contradiction","question":"Conflict?"}]'
+    )
+    assert questions[0].category == "contradiction"
+
+
 def test_duplicate_ids_are_rejected():
     with pytest.raises(ValueError, match="Duplicate"):
         parse_questions_text("q01: First?\nq01: Second?")

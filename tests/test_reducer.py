@@ -9,6 +9,7 @@ from app.schemas import (
     Condition,
     EntityRecord,
     EvidenceLedger,
+    ExtractionField,
     ExtractionStatus,
     Operator,
     QueryPlan,
@@ -112,6 +113,58 @@ class TestFilterCountList:
 
         assert result.result_list == ["A"]
 
+    def test_same_field_alternatives_are_or_grouped_with_subtotals(self):
+        entities = [
+            _make_entity("Kornati", {"country": "Croatia"}),
+            _make_entity("Paklenica", {"country": "Croatia"}),
+            _make_entity("Durmitor", {"country": "Montenegro"}),
+            _make_entity("Abisko", {"country": "Sweden"}),
+        ]
+        plan = _make_plan(
+            Operator.FILTER_COUNT_LIST,
+            target_fields=["name", "country"],
+            conditions=[
+                Condition(field="country", operator="==", value="Croatia"),
+                Condition(field="country", operator="==", value="Montenegro"),
+            ],
+        )
+
+        result = reduce(plan, _make_ledger(entities))
+
+        assert result.result_value == 3
+        assert result.result_list == ["Kornati", "Paklenica", "Durmitor"]
+        assert result.result_table[0] == {"metric": "total_entities", "count": 4}
+        assert [row["count"] for row in result.result_table[1:]] == [2, 1]
+
+
+def test_filter_list_detects_explicit_unit_outlier():
+    entities = [
+        _make_entity("Abisko", {"area_unit": "sq km"}),
+        _make_entity("Etna", {"area_unit": "sq km"}),
+        _make_entity("Jotunheimen", {"area_unit": "sq miles"}),
+    ]
+    plan = QueryPlan(
+        question_id="q1",
+        original_question=(
+            "One park is reported in different units from all the others. Which park?"
+        ),
+        operator=Operator.FILTER_LIST,
+        target_fields=["park_name", "area_unit"],
+        extraction_fields=[
+            ExtractionField(field_name="area_unit", expected_type="string")
+        ],
+        conditions=[
+            Condition(field="area_unit", operator="!=", value="the common unit")
+        ],
+    )
+
+    result = reduce(plan, _make_ledger(entities))
+
+    assert result.result_list == ["Jotunheimen"]
+    assert result.result_table == [
+        {"entity": "Jotunheimen", "area_unit": "sq miles"}
+    ]
+
 
 class TestArgmax:
     def test_basic_argmax(self):
@@ -150,6 +203,58 @@ class TestArgmax:
 
         assert result.result_value is None
         assert len(result.warnings) > 0
+
+    def test_argmax_uses_declared_numeric_extraction_field(self):
+        entities = [
+            _make_entity("Park A", {"area": 500}),
+            _make_entity("Park B", {"area": 1200}),
+        ]
+        plan = _make_plan(Operator.ARGMAX, target_fields=["name", "area"])
+        plan.extraction_fields = [
+            ExtractionField(
+                field_name="area",
+                description="park area",
+                expected_type="number",
+                unit="km2",
+            )
+        ]
+
+        result = reduce(plan, _make_ledger(entities))
+
+        assert result.result_value == 1200.0
+        assert result.result_list == ["Park B"]
+
+
+def test_plan_and_evidence_fields_use_canonical_names():
+    plan = QueryPlan(
+        question_id="q1",
+        original_question="test",
+        operator=Operator.ARGMAX,
+        target_fields=["Estimated Age", "Park Name"],
+        extraction_fields=[
+            ExtractionField(
+                field_name="estimated age",
+                expected_type="number",
+            )
+        ],
+        conditions=[Condition(field="Country Name", operator="==", value="Spain")],
+    )
+
+    assert plan.target_fields == ["estimated_age", "park_name"]
+    assert plan.extraction_fields[0].field_name == "estimated_age"
+    assert plan.conditions[0].field == "country"
+
+
+def test_plan_drops_non_filter_condition_operators():
+    plan = QueryPlan(
+        question_id="q1",
+        original_question="Two events far apart in the book",
+        operator=Operator.FILTER_LIST,
+        conditions=[Condition(field="position", operator="far apart", value="")],
+    )
+
+    assert plan.conditions == []
+    assert "Ignored non-filter condition" in plan.ambiguity_notes[0]
 
 
 class TestArgmin:

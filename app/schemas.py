@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.field_names import canonical_field_name
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -141,6 +143,7 @@ class QuestionRequest(BaseModel):
     """A single question from the user."""
     question_id: str = Field(default_factory=lambda: f"q-{uuid.uuid4().hex[:8]}")
     question: str
+    category: str = ""
 
 
 class QuestionBatch(BaseModel):
@@ -196,6 +199,7 @@ class QueryPlan(BaseModel):
     """Structured plan for answering a question."""
     question_id: str
     original_question: str
+    category: str = ""
     normalized_question: str = ""
     operator: Operator
     entity_type: str = ""
@@ -214,6 +218,7 @@ class QueryPlan(BaseModel):
 
     @field_validator(
         "normalized_question",
+        "category",
         "entity_type",
         "required_coverage",
         "answer_language",
@@ -238,6 +243,75 @@ class QueryPlan(BaseModel):
     @classmethod
     def _default_none_list(cls, v: Any) -> list:
         return [] if v is None else (v if isinstance(v, list) else [v])
+
+    @model_validator(mode="after")
+    def _canonicalize_field_contract(self) -> "QueryPlan":
+        self.target_fields = [
+            canonical_field_name(field) for field in self.target_fields if field
+        ]
+        self.grouping_fields = [
+            canonical_field_name(field) for field in self.grouping_fields if field
+        ]
+        self.return_fields = [
+            canonical_field_name(field) for field in self.return_fields if field
+        ]
+        for field in self.extraction_fields:
+            field.field_name = canonical_field_name(field.field_name)
+            if (
+                field.field_name == "location"
+                and "country" in field.description.casefold()
+            ):
+                field.field_name = "country"
+                self.target_fields = [
+                    "country" if target == "location" else target
+                    for target in self.target_fields
+                ]
+        for condition in self.conditions:
+            condition.field = canonical_field_name(condition.field)
+            if (
+                condition.field == "location"
+                and any(field.field_name == "country" for field in self.extraction_fields)
+            ):
+                condition.field = "country"
+        supported_condition_operators = {
+            ">=", "<=", ">", "<", "==", "!=", "contains", "not_contains",
+            "starts_with", "ends_with",
+        }
+        valid_conditions = []
+        for condition in self.conditions:
+            if condition.operator.strip().casefold() in supported_condition_operators:
+                valid_conditions.append(condition)
+            else:
+                self.ambiguity_notes.append(
+                    f"Ignored non-filter condition: {condition.field} "
+                    f"{condition.operator} {condition.value}".strip()
+                )
+        self.conditions = valid_conditions
+        extraction_names = {field.field_name for field in self.extraction_fields}
+        identity_fields = {"entity", "entity_name", "name", "park_name"}
+        for condition in self.conditions:
+            if condition.field and condition.field not in extraction_names | identity_fields:
+                expected_type = (
+                    "number"
+                    if condition.operator in {">", ">=", "<", "<="}
+                    else "string"
+                )
+                self.extraction_fields.append(ExtractionField(
+                    field_name=condition.field,
+                    description=f"Field required by condition: {condition.field}",
+                    expected_type=expected_type,
+                    unit=condition.unit,
+                ))
+                extraction_names.add(condition.field)
+        question = self.original_question.casefold()
+        if any(term in question for term in ("contradict", "inconsisten", "conflict")):
+            if "claim" not in extraction_names:
+                self.extraction_fields.append(ExtractionField(
+                    field_name="claim",
+                    description="Factual or superlative claim made by the document",
+                    expected_type="string",
+                ))
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +352,11 @@ class EvidenceItem(BaseModel):
     uncertainty: str = ""
     extraction_status: ExtractionStatus = ExtractionStatus.EVIDENCE_FOUND
 
+    @field_validator("field_name", mode="before")
+    @classmethod
+    def _canonicalize_field_name(cls, value: Any) -> str:
+        return canonical_field_name("" if value is None else str(value))
+
 
 class EntityRecord(BaseModel):
     """A deduplicated entity with merged evidence."""
@@ -290,6 +369,16 @@ class EntityRecord(BaseModel):
     source_pages: list[int] = Field(default_factory=list)
     conflicts: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _canonicalize_field_maps(self) -> "EntityRecord":
+        self.fields = {
+            canonical_field_name(key): value for key, value in self.fields.items()
+        }
+        self.raw_fields = {
+            canonical_field_name(key): value for key, value in self.raw_fields.items()
+        }
+        return self
 
 
 class ChunkMapResult(BaseModel):
@@ -422,7 +511,7 @@ class PipelineRun(BaseModel):
     """Complete run output."""
     run_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
     document_id: str
-    pipeline_mode: str = "FULLSCAN_OPERATOR"
+    pipeline_mode: str = "ADAPTIVE_HIERARCHICAL_V3"
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     answers: list[PipelineAnswer] = Field(default_factory=list)

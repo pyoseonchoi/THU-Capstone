@@ -1,238 +1,208 @@
-# FULLSCAN-QA
+# FULLSCAN-QA V3
 
-**Operator-Aware Exhaustive Large-Document Question Answering without RAG**
+Exhaustive long-document question answering for the DASU capstone, without RAG.
 
-> This system does not use embeddings, vector search, semantic retrieval, reranking, or top-k context selection. Every document chunk is processed for every applicable question batch.
+The runtime does not use embeddings, vector search, BM25, reranking, or top-k
+context selection. Every compiled record is assigned a terminal result for each
+unresolved question. Python performs counts, maxima, minima, and absence proofs.
 
-## 1. Purpose
+## Architecture
 
-FULLSCAN-QA answers complex questions about large PDF documents that may not fit reliably into a single LLM context. It handles:
+V3 has one production path: `ADAPTIVE_HIERARCHICAL_V3`.
 
-- **Aggregation**: "How many entities satisfy condition X?"
-- **Superlatives**: "Which entity has the largest value?"
-- **Absence**: "Which topic is never discussed?"
-- **List completeness**: "List every entity satisfying a condition."
-- **Numeric operations**: Count, sum, average, difference, percent change
-- **Comparison**: Compare distant entities
-- **Temporal reasoning**: Latest rule, event ordering
-- **Multi-hop**: Combine evidence from multiple sections
-
-## 2. Why Not RAG?
-
-Retrieval-Augmented Generation (RAG) retrieves only the top-k most similar chunks for a query. This fails catastrophically when:
-
-- **Aggregation** requires scanning every entity across the entire document
-- **Superlatives** need comparison of all candidates, not just the most "relevant" ones
-- **Absence** can only be proven by confirming all chunks lack the topic — not by retrieving a few
-- **Count completeness** requires finding *every* matching entity, not just those with high similarity scores
-
-FULLSCAN-QA solves this by processing **every chunk** for every question.
-
-## 3. Architecture
-
-```mermaid
-flowchart TD
-    PDF[PDF Upload] --> PARSE[PDF Parser<br/>PyMuPDF text extraction]
-    PARSE --> STRUCT[Structure Detector<br/>Font-size heading detection]
-    STRUCT --> CHUNK[Structure-Aware Chunker<br/>Section → paragraph → sentence splits]
-    CHUNK --> PLAN[Question Planner<br/>Mistral Small → QueryPlan]
-    PLAN --> MAP[Exhaustive Evidence Mapper<br/>Ministral 8B × ALL chunks]
-    MAP --> NORM[Evidence Normalization<br/>Numbers, units, dates, names]
-    NORM --> DEDUP[Entity Deduplication<br/>Merge with conflict preservation]
-    DEDUP --> REDUCE[Deterministic Reducer<br/>Python: COUNT, ARGMAX, ABSENCE, etc.]
-    REDUCE --> ANSWER[Answer Generator<br/>Mistral Small → grounded answer]
-    ANSWER --> VERIFY[Claim Verifier<br/>Mistral Small → per-claim check]
-    VERIFY --> COVERAGE[Coverage Verifier<br/>Check all chunks processed]
-    COVERAGE --> FINAL[Final Answer + Diagnostics]
+```text
+PDF/TXT
+  -> page-preserving parser
+  -> question-independent Document Compiler
+       -> closed repeated-record catalog when structure is detected
+       -> deterministic number/label binding for numeric cards
+       -> consecutive fallback segments for arbitrary Markdown
+       -> supplementary front/back-matter records
+  -> deterministic question compiler
+  -> Python structured executor when typed facts are sufficient
+  -> exhaustive batched mapper over every record for unresolved questions
+  -> category-specific reducer
+       -> absence coverage matrix
+       -> Python count/argmax
+       -> claim comparison
+       -> hierarchical evidence packet
+  -> Mistral Small final synthesis
+  -> one slot-refinement pass only when a requested field is objectively missing
+  -> incremental grader-compatible submission.json
 ```
 
-## 4. Pipeline Stages
+### Strategy Routing
 
-| Stage | Model | Purpose |
-|-------|-------|---------|
-| **Planner** | Mistral Small 3.2 | Transform question → structured QueryPlan |
-| **Mapper** | Ministral 3 8B | Extract evidence from each chunk |
-| **Reducer** | Python (no LLM) | Deterministic COUNT, ARGMAX, ABSENCE, etc. |
-| **Answer** | Mistral Small 3.2 | Generate grounded natural-language answer |
-| **Verifier** | Mistral Small 3.2 | Verify each claim against evidence |
+| Question class | Execution |
+|---|---|
+| Aggregation / superlative | Typed facts and Python Reduce; exhaustive mapped facts as fallback |
+| Absence | Candidate-topic x every-record coverage matrix |
+| Contradiction | Deterministic comparison when possible; otherwise exhaustive claim evidence |
+| Cross-section | Exhaustive map and complete evidence synthesis |
+| Global synthesis | Record-level map followed by hierarchical evidence Reduce |
+| Needle lookup | Exhaustive map followed by a concise grounded answer |
 
-## 5. Model Restrictions
+The final answer model never replaces a correct deterministic result. There is
+no general verifier that can rewrite a count, maximum, or absence verdict.
 
-Only these model families are permitted:
-- **Mistral Small 3.2** (default ID: `mistral-small-2506`)
-- **Ministral 3 8B** (default ID: `ministral-8b-2512`)
+## Reliability Properties
 
-No other LLMs (Gemini, OpenAI, Claude, Cohere, Llama, embedding models, OCR models) may be used.
+- Every page belongs to a catalog, segment, or supplementary mapping record.
+- Every unresolved question/record pair receives `evidence_found`,
+  `no_evidence`, `uncertain`, `parse_failed`, or `llm_failed`.
+- Positive evidence must contain a source-literal quote.
+- A quote shortened with an ellipsis is accepted only when a literal fragment
+  of at least 30 characters locates the complete source sentence.
+- Missing result rows and missing absence topics are detected automatically.
+- Mapper JSON gets one bounded schema-repair attempt.
+- Technical or coverage repair is batched across affected questions; it is not
+  repeated independently for every question.
+- Mapper results are cached by record content, plan, model, and prompt contract.
 
-## 6. Installation
+## Models
 
-```bash
-cd fullscan-qa
+Only the course broker models are used:
+
+| Stage | Broker model |
+|---|---|
+| Exhaustive evidence mapping | `ministral-3b-2512` |
+| Final synthesis / bounded repair | `mistral-small-3-2` |
+
+The deterministic compiler, router, reducers, coverage checks, and submission
+writer do not call an LLM.
+
+## Install
+
+```powershell
+cd C:\Users\user\Desktop\THU_Project\fullscan-qa
 pip install -e ".[dev]"
 ```
 
-## 7. Environment Configuration
+Create `.env` from `.env.example` and set the course group key. Never commit
+the real `.env` file.
 
-```bash
-cp .env.example .env
-# Edit .env with your API key and model settings
-```
+Important values for the course broker:
 
-### Key Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_PROVIDER` | `mistral_api` | `mistral_api` or `openai_compatible` |
-| `MISTRAL_API_KEY` | (empty) | Your Mistral API key |
-| `LLM_BASE_URL` | (empty) | Base URL for OpenAI-compatible endpoint |
-| `PLANNER_MODEL` | `mistral-small-2506` | Model for question planning |
-| `MAPPER_MODEL` | `ministral-8b-2512` | Model for evidence extraction |
-| `VERIFIER_MODEL` | `mistral-small-2506` | Model for claim verification |
-| `ANSWER_MODEL` | `mistral-small-2506` | Model for answer generation |
-| `MAX_CONCURRENT_REQUESTS` | `4` | Concurrent mapper requests |
-| `CHUNK_TARGET_TOKENS` | `3500` | Target chunk size (approx tokens) |
-| `QUESTION_BATCH_SIZE` | `4` | Questions per mapper call |
-| `PIPELINE_MODE` | `FULLSCAN_OPERATOR` | Pipeline mode |
-
-### Changing Model IDs
-
-The exact model IDs may differ depending on your endpoint. Update them in `.env`:
-
-```bash
-# For a university endpoint with different naming:
-PLANNER_MODEL=mistral-small-latest
-MAPPER_MODEL=ministral-8b-latest
-```
-
-## 8. Mistral API Mode
-
-```bash
-LLM_PROVIDER=mistral_api
-MISTRAL_API_KEY=your-api-key-here
-```
-
-## 9. OpenAI-Compatible Endpoint Mode
-
-For university-hosted or local endpoints serving approved Mistral models:
-
-```bash
+```dotenv
 LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=http://your-endpoint:8000/v1
-MISTRAL_API_KEY=your-token-if-needed
+LLM_BASE_URL=http://80.151.131.52:9839/v1
+MISTRAL_API_KEY=<group-key>
+MAPPER_MODEL=ministral-3b-2512
+ANSWER_MODEL=mistral-small-3-2
+MAX_CONCURRENT_REQUESTS=3
+REQUEST_TIMEOUT_SECONDS=300
+MAX_RETRIES=1
+QUESTION_BATCH_SIZE=8
+RECORD_BATCH_SIZE=3
+PIPELINE_MODE=ADAPTIVE_HIERARCHICAL
+TEAM_NAME=C
 ```
 
-## 10. Running FastAPI
+## Run
 
-```bash
-uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
+Terminal 1:
+
+```powershell
+python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-API endpoints:
-- `GET /health` — Health check
-- `POST /documents` — Upload and parse PDF
-- `GET /documents/{document_id}` — Document metadata
-- `POST /answer` — Answer questions
-- `POST /answer-direct` — Upload PDF + answer in one request
-- `GET /runs/{run_id}` — Retrieve run results
+Terminal 2:
 
-## 11. Running Streamlit
-
-```bash
-streamlit run ui/streamlit_app.py
+```powershell
+python -m streamlit run ui/streamlit_app.py --server.port 8501
 ```
 
-## 12. CLI Examples
+Open `http://localhost:8501`, upload the supplied machine-readable `.txt`
+document, upload `questions.json`, and process the questions. The PDF path is
+supported but the capstone instructions recommend TXT.
 
-```bash
-# Inspect a document
-python scripts/inspect_document.py document.pdf --sections --chunks --quality
+The CLI accepts either format:
 
-# Run the pipeline
-python scripts/run_pipeline.py document.pdf \
-  -q "How many parks have elevation over 3000m?" \
-     "Which park has the largest area?" \
-  -o results.json
-
-# Run evaluation
-python scripts/run_evaluation.py document.pdf eval_questions.jsonl \
-  -m FULLSCAN_OPERATOR -o eval_results/
+```powershell
+python scripts/run_pipeline.py C:\path\document.txt `
+  -q "What did the Icehotel start out as, and in what year?" `
+  -o run.json
 ```
 
-## 13. Running Tests
+## API
 
-```bash
-# All offline tests
-pytest tests/ -v
+- `GET /health`
+- `GET /health/llm`
+- `GET /usage`
+- `POST /documents`
+- `GET /documents/{document_id}`
+- `POST /answer`
+- `POST /answer-jobs`
+- `GET /answer-jobs/{job_id}`
+- `GET /runs/{run_id}`
+- `GET /runs/{run_id}/submission`
 
-# Specific test files
-pytest tests/test_reducer.py -v
-pytest tests/test_normalizer.py -v
-pytest tests/test_pipeline_fake_llm.py -v
+Long-running UI requests use background jobs. Progress stages are `compiling`,
+`mapping`, `repairing`, and `answering`.
 
-# With coverage
-pytest tests/ -v --cov=app --cov-report=term-missing
-```
+## Question Input
 
-## 14. Running Evaluation
+Only question IDs, text, and optional categories belong in `questions.json`:
 
-Input JSONL format:
 ```json
-{"question_id": "q1", "question": "...", "reference_answer": "...", "required_key_points": ["..."], "question_type": "ARGMAX"}
+[
+  {
+    "id": "d01",
+    "category": "aggregation",
+    "question": "How many ...?"
+  }
+]
 ```
 
-```bash
-python scripts/run_evaluation.py document.pdf eval.jsonl -m FULLSCAN_OPERATOR
+Do not provide grading `key_points` or `forbidden` content to the answering
+system. Those fields are evaluation references, not model input.
+
+## Submission
+
+Each run incrementally writes:
+
+```json
+{
+  "team": "C",
+  "notes": "...",
+  "answers": [
+    {"id": "d01", "answer": "...", "evidence": ["..."]}
+  ]
+}
 ```
 
-## 15. Output Artifacts
+The partial file remains valid if a later question fails or a deadline is hit.
 
-All outputs are stored under `data/`:
-- `data/uploads/` — Original PDFs
-- `data/parsed/` — Parsed pages and chunks as JSON
-- `data/runs/` — Complete pipeline run results
-- `data/cache/` — Mapper response cache
+## Verification
 
-## 16. Known Limitations
-
-- Token counting uses `len(text) / 4` approximation (exact Mistral tokenizer not in deps)
-- Vision fallback for image-heavy pages requires endpoint support
-- No database — filesystem-only persistence
-- Concurrent mapping is bounded by `MAX_CONCURRENT_REQUESTS`
-- Large documents may require extended processing time
-
-## 17. Competition-Day Checklist
-
-1. ✅ Set correct model IDs in `.env` for the competition endpoint
-2. ✅ Test with `GET /health` to verify API is running
-3. ✅ Upload the competition PDF via `POST /documents`
-4. ✅ Run questions via `POST /answer` with `FULLSCAN_OPERATOR` mode
-5. ✅ Check coverage percentages in the response
-6. ✅ If coverage is low, increase `MAX_RETRIES` and re-run
-7. ✅ Download diagnostics for submission
-
-## 18. Adapting the Companion-App Endpoint
-
-Use `POST /answer-direct` for single-request upload + answer:
-
-```bash
-curl -X POST http://localhost:8000/answer-direct \
-  -F "file=@document.pdf" \
-  -F 'questions_json=[{"question_id":"q1","question":"..."}]'
+```powershell
+python -m ruff check app tests scripts
+python -m pytest tests -q -m "not live"
+python -m compileall -q app ui scripts
 ```
 
-## 19. Token & Performance Optimization
+V3 regression tests cover:
 
-- **Question batching**: Multiple questions per mapper call (default 4)
-- **Response caching**: Content-hash-based cache keys prevent re-processing
-- **Configurable concurrency**: Tune `MAX_CONCURRENT_REQUESTS` for your endpoint
-- **Chunk size**: Adjust `CHUNK_TARGET_TOKENS` based on model context window
-- **Baseline comparison**: Run `DIRECT_CONTEXT` or `SUMMARY_MAP_REDUCE` modes to compare
+- numeric value/label binding, million scaling, and BC dates;
+- complete generic-page segmentation;
+- exhaustive mapper pair coverage and exact-quote validation;
+- ellipsis-to-source quote restoration;
+- no-LLM structured execution;
+- end-to-end map, Reduce, answer, coverage, and submission behavior.
 
-## 20. Baseline Modes
+## Artifacts
 
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `FULLSCAN_OPERATOR` | Full pipeline with operators | Production |
-| `DIRECT_CONTEXT` | Stuff document into context | Comparison baseline |
-| `SUMMARY_MAP_REDUCE` | Chunk summaries → synthesis | Comparison baseline |
-| `REFINE` | Sequential draft refinement | Comparison baseline |
+```text
+data/parsed/*_parsed.json       page-preserving parse
+data/parsed/*_compiled_v3.json V3 catalog and typed facts
+data/cache/v3/*.json           validated mapper cache
+data/runs/*_submission.json    incremental grader file
+data/runs/<run-id>/*.json      plans, map results, diagnostics
+data/runs/<run-id>.json        completed PipelineRun
+```
+
+The practice document compiles into 60 park records plus 3 supplementary
+front/index records. Its structured questions are resolved from the closed
+catalog without LLM arithmetic. The remaining questions require two exhaustive
+mapper passes in the default batching layout, followed by at most seven final
+answer calls unless a bounded repair pass is triggered.

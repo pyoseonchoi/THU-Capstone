@@ -20,6 +20,7 @@ from app.schemas import (
     DocumentMetadata,
     PipelineRun,
 )
+from app.v3.models import CompiledDocument
 
 logger = get_logger("storage.run_store")
 
@@ -80,6 +81,19 @@ class RunStore:
         if not path.exists():
             return None
         return DocumentMetadata.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def save_compiled_document(self, document: CompiledDocument) -> Path:
+        """Persist the question-independent V3 document representation."""
+        path = self._settings.parsed_dir / f"{document.document_id}_compiled_v3.json"
+        _atomic_write(path, document.model_dump_json(indent=2))
+        return path
+
+    def load_compiled_document(self, document_id: str) -> CompiledDocument | None:
+        """Load a previously compiled V3 document."""
+        path = self._settings.parsed_dir / f"{document_id}_compiled_v3.json"
+        if not path.exists():
+            return None
+        return CompiledDocument.model_validate_json(path.read_text(encoding="utf-8"))
 
     def load_quality_records(self, document_id: str) -> list:
         """Load page quality records from parsed output."""

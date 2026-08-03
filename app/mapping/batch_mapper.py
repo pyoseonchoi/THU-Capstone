@@ -16,6 +16,7 @@ from app.schemas import (
     ChunkMapResult,
     DocumentChunk,
     ExtractionStatus,
+    Operator,
     QueryPlan,
 )
 
@@ -34,6 +35,13 @@ class BatchMapper:
         self._max_concurrent = settings.max_concurrent_requests
         self._max_retries = settings.max_retries
         self._batch_size = settings.question_batch_size
+        self._fallback_model = settings.planner_model
+
+    _RETRYABLE_STATUSES = {
+        ExtractionStatus.UNCERTAIN,
+        ExtractionStatus.LLM_FAILED,
+        ExtractionStatus.PARSE_FAILED,
+    }
 
     async def map_all_chunks(
         self,
@@ -76,7 +84,7 @@ class BatchMapper:
         plan_batches = self._split_plans(plans)
         total_work = total * len(plan_batches)
         if progress_callback:
-            progress_callback(0, total_work, 0)
+            progress_callback("mapping", 0, total_work, 0)
 
         for plan_batch in plan_batches:
             # Create tasks for all chunks with this question batch
@@ -92,10 +100,7 @@ class BatchMapper:
 
                     # Track failures for retry
                     for r in results:
-                        if r.extraction_status in (
-                            ExtractionStatus.LLM_FAILED,
-                            ExtractionStatus.PARSE_FAILED,
-                        ):
+                        if r.extraction_status in self._RETRYABLE_STATUSES:
                             # Find the chunk for retry
                             chunk = next(
                                 (c for c in chunks if c.chunk_id == r.chunk_id),
@@ -115,7 +120,7 @@ class BatchMapper:
                 processed += 1
                 if progress_callback:
                     fail_count = len(failed_chunks)
-                    progress_callback(processed, total_work, fail_count)
+                    progress_callback("mapping", processed, total_work, fail_count)
 
         # Retry failed chunks
         if failed_chunks:
@@ -135,10 +140,30 @@ class BatchMapper:
         return all_results
 
     def _split_plans(self, plans: list[QueryPlan]) -> list[list[QueryPlan]]:
-        """Split plans into batches of configurable size."""
+        """Split plans by output profile while retaining exhaustive coverage."""
+        standard: list[QueryPlan] = []
+        absence: list[QueryPlan] = []
+        synthesis: list[QueryPlan] = []
+        for plan in plans:
+            category = plan.category.strip().casefold().replace("-", "_")
+            if plan.operator == Operator.ABSENCE or category == "absence":
+                absence.append(plan)
+            elif (
+                plan.operator in (Operator.MULTI_HOP, Operator.GENERAL_SYNTHESIS)
+                or category in {"contradiction", "cross_section", "global_synthesis"}
+            ):
+                synthesis.append(plan)
+            else:
+                standard.append(plan)
+
         batches: list[list[QueryPlan]] = []
-        for i in range(0, len(plans), self._batch_size):
-            batches.append(plans[i : i + self._batch_size])
+        for group, size in (
+            (standard, self._batch_size),
+            (absence, min(3, self._batch_size)),
+            (synthesis, min(3, self._batch_size)),
+        ):
+            for index in range(0, len(group), size):
+                batches.append(group[index:index + size])
         return batches
 
     async def _retry_failed(
@@ -158,13 +183,24 @@ class BatchMapper:
             async def _retry(chunk, plans):
                 async with semaphore:
                     try:
-                        results = await self._mapper.map_chunk(chunk, plans)
+                        if isinstance(self._mapper, EvidenceMapper):
+                            results = await self._mapper.map_chunk(
+                                chunk,
+                                plans,
+                                model_override=(
+                                    self._fallback_model
+                                    if attempt == self._max_retries
+                                    else None
+                                ),
+                            )
+                        else:
+                            results = await self._mapper.map_chunk(chunk, plans)
                     except Exception as exc:
                         logger.exception(
                             "Retry task failed for chunk %s", chunk.chunk_id
                         )
                         results = self._failure_results(chunk, plans, exc)
-                    return chunk, self._complete_results(chunk, plans, results)
+                    return chunk, plans, self._complete_results(chunk, plans, results)
 
             tasks = [
                 asyncio.create_task(_retry(chunk, plans))
@@ -173,17 +209,9 @@ class BatchMapper:
 
             for task in asyncio.as_completed(tasks):
                 try:
-                    orig_chunk, results = await task
-                    # Find original plans for this chunk
-                    orig_chunk_plans = next(
-                        (ps for c, ps in failed if c.chunk_id == orig_chunk.chunk_id),
-                        [],
-                    )
+                    orig_chunk, orig_chunk_plans, results = await task
                     for r in results:
-                        if r.extraction_status in (
-                            ExtractionStatus.LLM_FAILED,
-                            ExtractionStatus.PARSE_FAILED,
-                        ):
+                        if r.extraction_status in self._RETRYABLE_STATUSES:
                             plan = next(
                                 (p for p in orig_chunk_plans if p.question_id == r.question_id),
                                 None,
@@ -199,6 +227,27 @@ class BatchMapper:
 
         return retry_results
 
+    async def remap_question_with_fallback(
+        self,
+        chunks: list[DocumentChunk],
+        plan: QueryPlan,
+    ) -> list[ChunkMapResult]:
+        """Re-map every chunk for one weak plan using the stronger model."""
+        semaphore = asyncio.Semaphore(self._max_concurrent)
+
+        async def _remap(chunk: DocumentChunk) -> ChunkMapResult:
+            async with semaphore:
+                results = await self._mapper.map_chunk(
+                    chunk,
+                    [plan],
+                    model_override=self._fallback_model,
+                )
+                return self._complete_results(chunk, [plan], results)[0]
+
+        return await asyncio.gather(*(
+            _remap(chunk) for chunk in chunks
+        ))
+
     def _merge_retry_results(
         self,
         original: list[ChunkMapResult],
@@ -208,10 +257,7 @@ class BatchMapper:
         retry_map: dict[tuple[str, str], ChunkMapResult] = {}
         for r in retries:
             key = (r.chunk_id, r.question_id)
-            if r.extraction_status not in (
-                ExtractionStatus.LLM_FAILED,
-                ExtractionStatus.PARSE_FAILED,
-            ):
+            if r.extraction_status not in self._RETRYABLE_STATUSES:
                 retry_map[key] = r
 
         merged: list[ChunkMapResult] = []

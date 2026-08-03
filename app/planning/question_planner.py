@@ -6,6 +6,7 @@ validates with Pydantic, and retries once on validation failure.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -37,6 +38,7 @@ class QuestionPlanner:
         """
         user_msg = (
             f"Question ID: {question.question_id}\n"
+            f"Category hint: {question.category or '(not provided)'}\n"
             f"Question: {question.question}\n\n"
             "Produce the JSON query plan."
         )
@@ -114,6 +116,7 @@ class QuestionPlanner:
             # Ensure question_id matches
             data["question_id"] = question.question_id
             data["original_question"] = question.question
+            data["category"] = question.category
 
             # Clean None values in nested dicts/lists
             def _clean_nulls(o):
@@ -146,11 +149,28 @@ class QuestionPlanner:
             return None
 
     async def plan_batch(
-        self, questions: list[QuestionRequest]
+        self,
+        questions: list[QuestionRequest],
+        *,
+        max_concurrent: int = 2,
+        progress_callback: Optional[callable] = None,
     ) -> list[QueryPlan]:
-        """Plan multiple questions sequentially."""
-        plans: list[QueryPlan] = []
-        for q in questions:
-            plan = await self.plan(q)
-            plans.append(plan)
-        return plans
+        """Plan questions concurrently with stable output ordering."""
+        semaphore = asyncio.Semaphore(max(1, max_concurrent))
+        completed = 0
+
+        async def _plan(index: int, question: QuestionRequest):
+            nonlocal completed
+            async with semaphore:
+                plan = await self.plan(question)
+            completed += 1
+            if progress_callback:
+                progress_callback("planning", completed, len(questions), 0)
+            return index, plan
+
+        tasks = [
+            asyncio.create_task(_plan(index, question))
+            for index, question in enumerate(questions)
+        ]
+        indexed = await asyncio.gather(*tasks)
+        return [plan for _, plan in sorted(indexed)]

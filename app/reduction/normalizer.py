@@ -24,7 +24,6 @@ _SCALE_SUFFIXES = {
     "million": 1_000_000,
     "mln": 1_000_000,
     "mil": 1_000_000,
-    "m": 1_000_000,
     "billion": 1_000_000_000,
     "bln": 1_000_000_000,
     "bil": 1_000_000_000,
@@ -256,6 +255,10 @@ def normalize_date(raw: str) -> Optional[str]:
     if not text:
         return None
 
+    era_year = re.search(r"\b(\d{1,4})\s*(BC|BCE|AD|CE)\b", text, re.IGNORECASE)
+    if era_year:
+        return f"{int(era_year.group(1))} {era_year.group(2).upper()}"
+
     # Already ISO
     m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", text)
     if m:
@@ -298,6 +301,52 @@ def normalize_date(raw: str) -> Optional[str]:
         return f"{m.group(1)}-01-01"
 
     return None
+
+
+def normalize_extracted_value(
+    raw_value: str,
+    provided_value: object,
+    *,
+    expected_type: str = "",
+    from_unit: str = "",
+    target_unit: str = "",
+    supporting_text: str = "",
+) -> object:
+    """Validate an LLM-normalized value against the source representation."""
+    source = " ".join(part for part in (raw_value, supporting_text) if part).strip()
+    expected = expected_type.strip().casefold()
+
+    era_year = normalize_date(source)
+    if era_year and re.search(r"\b(?:BC|BCE|AD|CE)\b", source, re.IGNORECASE):
+        return era_year
+
+    if expected in {"date", "year"}:
+        normalized_date = normalize_date(source)
+        if normalized_date:
+            return normalized_date
+
+    if expected in {"number", "numeric", "integer", "float"}:
+        parsed = parse_number(raw_value)
+        if parsed is None:
+            number_match = re.search(
+                r"[-+]?\d[\d.,]*(?:\s*(?:thousand|million|billion|trillion))?",
+                source,
+                re.IGNORECASE,
+            )
+            if number_match:
+                parsed = parse_number(number_match.group(0))
+        if parsed is None and isinstance(provided_value, (int, float)):
+            parsed = float(provided_value)
+        if parsed is not None:
+            if from_unit and target_unit:
+                converted = normalize_unit(parsed, from_unit, target_unit)
+                if converted is not None:
+                    return converted
+            return parsed
+
+    if provided_value is not None and provided_value != "":
+        return provided_value
+    return raw_value
 
 
 # ---------------------------------------------------------------------------

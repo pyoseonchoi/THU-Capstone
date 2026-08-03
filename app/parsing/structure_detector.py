@@ -26,6 +26,26 @@ def detect_sections(pages: list[DocumentPage]) -> list[DocumentSection]:
     Returns:
         List of DocumentSection objects in document order.
     """
+    # Markdown headings carry structure even when TXT blocks have uniform fonts.
+    markdown_headings: dict[int, list[tuple[str, int]]] = {}
+    for page in pages:
+        headings: list[tuple[str, int]] = []
+        for match in re.finditer(
+            r"^[ \t]*(#{1,6})[ \t]+([^\r\n]+?)[ \t]*$",
+            page.text,
+            re.MULTILINE,
+        ):
+            title = match.group(2).strip()
+            if title and title not in {item[0] for item in headings}:
+                headings.append((title, len(match.group(1))))
+        if headings:
+            markdown_headings[page.page_number] = headings
+
+    if markdown_headings:
+        sections = _sections_from_headings(pages, markdown_headings)
+        logger.info("Detected %d Markdown sections", len(sections))
+        return sections
+
     # Collect all font sizes across the document
     all_sizes: list[float] = []
     for page in pages:
@@ -69,34 +89,7 @@ def detect_sections(pages: list[DocumentPage]) -> list[DocumentSection]:
                 if heading not in {title for title, _ in page_headings}:
                     page_headings.append((heading, level))
 
-    sections: list[DocumentSection] = []
-    if headings_by_page:
-        first_page = pages[0].page_number
-        last_page = pages[-1].page_number
-        heading_pages = sorted(headings_by_page)
-
-        # Preserve front matter without assigning its text to the first heading.
-        if first_page < heading_pages[0]:
-            sections.append(DocumentSection(
-                title="Front Matter",
-                level=0,
-                page_start=first_page,
-                page_end=heading_pages[0] - 1,
-            ))
-
-        for index, page_number in enumerate(heading_pages):
-            page_headings = headings_by_page[page_number]
-            next_page = (
-                heading_pages[index + 1]
-                if index + 1 < len(heading_pages)
-                else last_page + 1
-            )
-            sections.append(DocumentSection(
-                title=" / ".join(title for title, _ in page_headings),
-                level=min(level for _, level in page_headings),
-                page_start=page_number,
-                page_end=next_page - 1,
-            ))
+    sections = _sections_from_headings(pages, headings_by_page)
 
     # If no headings detected, create a single section
     if not sections:
@@ -108,6 +101,42 @@ def detect_sections(pages: list[DocumentPage]) -> list[DocumentSection]:
         ))
 
     logger.info("Detected %d sections", len(sections))
+    return sections
+
+
+def _sections_from_headings(
+    pages: list[DocumentPage],
+    headings_by_page: dict[int, list[tuple[str, int]]],
+) -> list[DocumentSection]:
+    """Build non-overlapping page-range sections from detected headings."""
+    if not headings_by_page or not pages:
+        return []
+
+    sections: list[DocumentSection] = []
+    first_page = pages[0].page_number
+    last_page = pages[-1].page_number
+    heading_pages = sorted(headings_by_page)
+    if first_page < heading_pages[0]:
+        sections.append(DocumentSection(
+            title="Front Matter",
+            level=0,
+            page_start=first_page,
+            page_end=heading_pages[0] - 1,
+        ))
+
+    for index, page_number in enumerate(heading_pages):
+        page_headings = headings_by_page[page_number]
+        next_page = (
+            heading_pages[index + 1]
+            if index + 1 < len(heading_pages)
+            else last_page + 1
+        )
+        sections.append(DocumentSection(
+            title=" / ".join(title for title, _ in page_headings),
+            level=min(level for _, level in page_headings),
+            page_start=page_number,
+            page_end=next_page - 1,
+        ))
     return sections
 
 

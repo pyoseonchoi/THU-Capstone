@@ -22,11 +22,11 @@ setup_logging()
 app = FastAPI(
     title="FULLSCAN-QA",
     description=(
-        "Operator-Aware Exhaustive Large-Document QA without RAG. "
+        "Adaptive exhaustive large-document QA without RAG. "
         "This system does not use embeddings, vector search, semantic retrieval, "
         "reranking, or top-k context selection."
     ),
-    version="0.1.0",
+    version="3.0.0",
 )
 
 SUPPORTED_DOCUMENT_EXTENSIONS = (".pdf", ".txt")
@@ -48,7 +48,7 @@ def _get_store() -> RunStore:
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "ok", "service": "fullscan-qa", "version": "0.1.0"}
+    return {"status": "ok", "service": "fullscan-qa", "version": "3.0.0"}
 
 
 @app.get("/health/llm")
@@ -125,7 +125,7 @@ class AnswerRequest(BaseModel):
     document_id: str
     questions: list[QuestionRequest]
     include_diagnostics: bool = True
-    pipeline_mode: str = "FULLSCAN_OPERATOR"
+    pipeline_mode: str = "ADAPTIVE_HIERARCHICAL"
 
 
 def _serialize_run(run: PipelineRun) -> dict:
@@ -205,8 +205,9 @@ async def _execute_answer_job(job_id: str, req: AnswerRequest) -> None:
             raise RuntimeError(llm_status["message"])
         pipeline = _get_pipeline()
 
-        def progress(processed: int, total: int, failed: int) -> None:
+        def progress(stage: str, processed: int, total: int, failed: int) -> None:
             _answer_jobs[job_id].update({
+                "stage": stage,
                 "processed": processed,
                 "total": total,
                 "failed": failed,
@@ -247,6 +248,7 @@ async def create_answer_job(req: AnswerRequest):
     _answer_jobs[job_id] = {
         "job_id": job_id,
         "status": "running",
+        "stage": "compiling",
         "processed": 0,
         "total": 0,
         "failed": 0,

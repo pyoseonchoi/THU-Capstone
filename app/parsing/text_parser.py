@@ -18,6 +18,10 @@ from app.schemas import (
 logger = get_logger("parsing.text_parser")
 
 DEFAULT_VIRTUAL_PAGE_CHARACTERS = 8_000
+PAGE_MARKER_RE = re.compile(
+    r"<!--\s*page-start-marker-(\d+)\s*-->",
+    re.IGNORECASE,
+)
 
 
 def _decode_text(content: bytes) -> tuple[str, str]:
@@ -36,6 +40,50 @@ def _decode_text(content: bytes) -> tuple[str, str]:
 
     # Latin-1 is a lossless byte fallback and never raises.
     return content.decode("latin-1"), "latin-1"
+
+
+def normalize_text_source(text: str) -> str:
+    """Restore escaped line breaks in serialized Markdown exports.
+
+    Some Docling downloads contain literal ``\\n`` sequences and no physical
+    line breaks. Only decode that representation when it clearly dominates so
+    ordinary prose containing a backslash remains untouched.
+    """
+    physical_newlines = text.count("\n")
+    escaped_newlines = text.count(r"\n")
+    marker_serialized = (
+        physical_newlines == 0
+        and escaped_newlines >= 2
+        and PAGE_MARKER_RE.search(text) is not None
+    )
+    looks_serialized = marker_serialized or (
+        escaped_newlines >= 10
+        and escaped_newlines > max(physical_newlines * 4, 20)
+    )
+    if looks_serialized:
+        text = text.replace(r"\r\n", "\n")
+        text = text.replace(r"\n", "\n").replace(r"\r", "\n")
+        text = text.replace(r'\"', '"')
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def split_marked_pages(text: str) -> list[tuple[int, str]]:
+    """Split Markdown using Docling page markers while preserving page IDs."""
+    matches = list(PAGE_MARKER_RE.finditer(text))
+    if not matches:
+        return []
+
+    pages: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for index, match in enumerate(matches):
+        page_number = int(match.group(1))
+        if page_number in seen:
+            continue
+        body_start = match.end()
+        body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        pages.append((page_number, text[body_start:body_end].strip()))
+        seen.add(page_number)
+    return pages
 
 
 def _split_large_block(block: str, target_characters: int) -> list[str]:
@@ -77,7 +125,7 @@ def split_virtual_pages(
     if target_characters < 500:
         raise ValueError("target_characters must be at least 500")
 
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalize_text_source(text)
     normalized = normalized.replace("\x00", "").strip()
     if not normalized:
         return []
@@ -130,15 +178,23 @@ def parse_text(
     except OSError as exc:
         raise DocumentParseError(f"Cannot read text file: {exc}") from exc
 
-    virtual_pages = split_virtual_pages(
-        text,
-        target_characters=virtual_page_characters,
-    )
-    if not virtual_pages:
+    normalized_text = normalize_text_source(text)
+    marked_pages = split_marked_pages(normalized_text)
+    page_parts = marked_pages or [
+        (index, page_text)
+        for index, page_text in enumerate(
+            split_virtual_pages(
+                normalized_text,
+                target_characters=virtual_page_characters,
+            ),
+            start=1,
+        )
+    ]
+    if not page_parts or not any(page_text.strip() for _, page_text in page_parts):
         raise DocumentParseError("Text file is empty or contains no readable text")
 
     pages: list[DocumentPage] = []
-    for page_number, page_text in enumerate(virtual_pages, start=1):
+    for page_number, page_text in page_parts:
         character_count = len(page_text)
         status = (
             PageExtractionStatus.OK

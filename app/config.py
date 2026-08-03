@@ -25,10 +25,7 @@ class LLMProvider(str, enum.Enum):
 
 
 class PipelineMode(str, enum.Enum):
-    FULLSCAN_OPERATOR = "FULLSCAN_OPERATOR"
-    DIRECT_CONTEXT = "DIRECT_CONTEXT"
-    SUMMARY_MAP_REDUCE = "SUMMARY_MAP_REDUCE"
-    REFINE = "REFINE"
+    ADAPTIVE_HIERARCHICAL = "ADAPTIVE_HIERARCHICAL"
 
 
 class Settings(BaseSettings):
@@ -41,10 +38,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = ""
 
     # Model identifiers – adjust to match your endpoint
-    planner_model: str = "mistral-small-2506"
-    mapper_model: str = "ministral-8b-2512"
-    verifier_model: str = "mistral-small-2506"
-    answer_model: str = "mistral-small-2506"
+    planner_model: str = "mistral-small-3-2"
+    mapper_model: str = "ministral-3b-2512"
+    verifier_model: str = "mistral-small-3-2"
+    answer_model: str = "mistral-small-3-2"
 
     # Concurrency & reliability
     max_concurrent_requests: int = Field(default=4, ge=1, le=64)
@@ -57,6 +54,7 @@ class Settings(BaseSettings):
 
     # Question batching
     question_batch_size: int = Field(default=4, ge=1, le=10)
+    record_batch_size: int = Field(default=3, ge=1, le=6)
 
     # Storage
     data_dir: Path = Path("./data")
@@ -65,13 +63,14 @@ class Settings(BaseSettings):
     enable_vision_fallback: bool = False
 
     # Pipeline mode
-    pipeline_mode: PipelineMode = PipelineMode.FULLSCAN_OPERATOR
+    pipeline_mode: PipelineMode = PipelineMode.ADAPTIVE_HIERARCHICAL
     evaluation_mode: bool = False
 
     # Submission metadata
     team_name: str = ""
     submission_notes: str = (
-        "Operator-aware exhaustive mapping with deterministic reduction."
+        "Compiled document catalog, deterministic structured reduction, exhaustive "
+        "coverage matrices, and evidence-grounded hierarchical synthesis."
     )
 
     # LLM parameters
@@ -80,10 +79,10 @@ class Settings(BaseSettings):
     llm_seed: Optional[int] = 42
 
     # Prompt versions – bump when prompts change to invalidate cache
-    prompt_version_planner: str = "v2"
-    prompt_version_mapper: str = "v2"
-    prompt_version_verifier: str = "v2"
-    prompt_version_answer: str = "v2"
+    prompt_version_planner: str = "v3"
+    prompt_version_mapper: str = "v3"
+    prompt_version_verifier: str = "v3"
+    prompt_version_answer: str = "v3"
 
     model_config = {
         # The workspace file holds secrets; the project file holds runtime config.

@@ -80,7 +80,24 @@ def reduce(plan: QueryPlan, ledger: EvidenceLedger) -> OperationResult:
 # ---------------------------------------------------------------------------
 
 def _get_target_field(plan: QueryPlan) -> str:
-    """Get the primary target field name from the plan."""
+    """Get the operation field, preferring declared numeric extractions."""
+    numeric_operators = {
+        Operator.ARGMAX,
+        Operator.ARGMIN,
+        Operator.SUM,
+        Operator.AVERAGE,
+        Operator.DIFFERENCE,
+        Operator.PERCENT_CHANGE,
+    }
+    if plan.operator in numeric_operators:
+        numeric_fields = [
+            field.field_name
+            for field in plan.extraction_fields
+            if field.expected_type.strip().casefold()
+            in {"number", "numeric", "integer", "float"}
+        ]
+        if numeric_fields:
+            return numeric_fields[0]
     if plan.target_fields:
         return plan.target_fields[0]
     return ""
@@ -115,14 +132,18 @@ def _apply_conditions(
     if not conditions:
         return list(entities), excluded, missing
 
+    grouped_conditions: dict[str, list] = {}
+    for condition in conditions:
+        field = condition.field or target_field
+        grouped_conditions.setdefault(field, []).append(condition)
+
     for entity in entities:
         passes = True
         entity_missing = False
-        for cond in conditions:
-            field = cond.field or target_field
+        for field, field_conditions in grouped_conditions.items():
             raw_value = (
                 entity.entity_name
-                if field in ("entity", "entity_name", "name")
+                if field in ("entity", "entity_name", "name", "park_name")
                 else entity.fields.get(field)
             )
             if raw_value is None:
@@ -132,44 +153,54 @@ def _apply_conditions(
                 entity_missing = True
                 break
 
-            operator = cond.operator.strip().lower()
-            expected = cond.value
-            actual_number = _get_numeric_value(entity, field)
-            expected_number = parse_number(expected)
+            outcomes: list[bool] = []
+            operators: list[str] = []
+            for cond in field_conditions:
+                operator = cond.operator.strip().lower()
+                operators.append(operator)
+                expected = cond.value
+                actual_number = _get_numeric_value(entity, field)
+                expected_number = parse_number(expected)
 
-            if (
-                operator in (">=", "<=", ">", "<")
-                and actual_number is not None
-                and expected_number is not None
-            ):
-                comparisons = {
-                    ">=": actual_number >= expected_number,
-                    "<=": actual_number <= expected_number,
-                    ">": actual_number > expected_number,
-                    "<": actual_number < expected_number,
-                }
-                passes = comparisons[operator]
-            elif operator in ("==", "!="):
-                if actual_number is not None and expected_number is not None:
-                    equal = actual_number == expected_number
+                if (
+                    operator in (">=", "<=", ">", "<")
+                    and actual_number is not None
+                    and expected_number is not None
+                ):
+                    comparisons = {
+                        ">=": actual_number >= expected_number,
+                        "<=": actual_number <= expected_number,
+                        ">": actual_number > expected_number,
+                        "<": actual_number < expected_number,
+                    }
+                    outcomes.append(comparisons[operator])
+                elif operator in ("==", "!="):
+                    if actual_number is not None and expected_number is not None:
+                        equal = actual_number == expected_number
+                    else:
+                        equal = (
+                            str(raw_value).strip().casefold()
+                            == expected.strip().casefold()
+                        )
+                    outcomes.append(equal if operator == "==" else not equal)
                 else:
-                    equal = str(raw_value).strip().casefold() == expected.strip().casefold()
-                passes = equal if operator == "==" else not equal
-            else:
-                actual_text = str(raw_value).casefold()
-                expected_text = expected.casefold()
-                if operator == "contains":
-                    passes = expected_text in actual_text
-                elif operator == "not_contains":
-                    passes = expected_text not in actual_text
-                elif operator == "starts_with":
-                    passes = actual_text.startswith(expected_text)
-                elif operator == "ends_with":
-                    passes = actual_text.endswith(expected_text)
-                else:
-                    passes = False
+                    actual_text = str(raw_value).casefold()
+                    expected_text = expected.casefold()
+                    text_checks = {
+                        "contains": expected_text in actual_text,
+                        "not_contains": expected_text not in actual_text,
+                        "starts_with": actual_text.startswith(expected_text),
+                        "ends_with": actual_text.endswith(expected_text),
+                    }
+                    outcomes.append(text_checks.get(operator, False))
 
-            if not passes:
+            alternatives = len(outcomes) > 1 and all(
+                operator in {"==", "contains", "starts_with", "ends_with"}
+                for operator in operators
+            )
+            group_passes = any(outcomes) if alternatives else all(outcomes)
+            if not group_passes:
+                passes = False
                 break
 
         if passes:
@@ -178,6 +209,26 @@ def _apply_conditions(
             excluded.append(entity.entity_name)
 
     return matching, excluded, missing
+
+
+def _outlier_field(plan: QueryPlan) -> str:
+    """Return the compared field for explicit one-versus-all outlier questions."""
+    question = plan.original_question.casefold()
+    asks_outlier = "different unit" in question and (
+        "all the others" in question or "all others" in question
+    )
+    if not asks_outlier:
+        return ""
+    if plan.conditions:
+        return plan.conditions[0].field
+    return next(
+        (
+            field.field_name
+            for field in plan.extraction_fields
+            if "unit" in field.field_name
+        ),
+        "",
+    )
 
 
 def _ordered_operands(
@@ -215,6 +266,45 @@ def _reduce_lookup(plan: QueryPlan, ledger: EvidenceLedger) -> OperationResult:
 def _reduce_filter_list(plan: QueryPlan, ledger: EvidenceLedger) -> OperationResult:
     """Filter entities by conditions and return their names."""
     field = _get_target_field(plan)
+    outlier_field = _outlier_field(plan)
+    if outlier_field:
+        values: dict[str, list[EntityRecord]] = {}
+        for entity in ledger.entities:
+            value = entity.fields.get(outlier_field)
+            if value not in (None, ""):
+                values.setdefault(str(value).strip().casefold(), []).append(entity)
+        if len(values) >= 2:
+            modal_count = max(len(group) for group in values.values())
+            matching = [
+                entity
+                for group in values.values()
+                if len(group) < modal_count
+                for entity in group
+            ]
+            excluded = [
+                entity.entity_name
+                for group in values.values()
+                if len(group) == modal_count
+                for entity in group
+            ]
+            return OperationResult(
+                question_id=plan.question_id,
+                operator=plan.operator,
+                result_list=[entity.entity_name for entity in matching],
+                result_table=[
+                    {
+                        "entity": entity.entity_name,
+                        outlier_field: entity.fields.get(outlier_field),
+                    }
+                    for entity in matching
+                ],
+                included_entities=[entity.entity_name for entity in matching],
+                excluded_entities=excluded,
+                computation_detail=(
+                    f"Selected {len(matching)} entities whose '{outlier_field}' "
+                    "differs from the modal value"
+                ),
+            )
     matching, excluded, missing = _apply_conditions(
         ledger.entities, plan.conditions, field
     )
@@ -270,11 +360,35 @@ def _reduce_filter_count_list(plan: QueryPlan, ledger: EvidenceLedger) -> Operat
         ledger.entities, plan.conditions, field
     )
 
+    result_table: list[dict[str, Any]] = [{
+        "metric": "total_entities",
+        "count": len(ledger.entities),
+    }]
+    equality_groups: dict[str, list] = {}
+    for condition in plan.conditions:
+        if condition.operator.strip() == "==":
+            equality_groups.setdefault(condition.field or field, []).append(condition)
+    for group_field, conditions in equality_groups.items():
+        for condition in conditions:
+            group_entities, _, _ = _apply_conditions(
+                ledger.entities,
+                [condition],
+                group_field,
+            )
+            result_table.append({
+                "metric": "condition_group",
+                "field": group_field,
+                "value": condition.value,
+                "count": len(group_entities),
+                "entities": [entity.entity_name for entity in group_entities],
+            })
+
     result = OperationResult(
         question_id=plan.question_id,
         operator=plan.operator,
         result_value=len(matching),
         result_list=[e.entity_name for e in matching],
+        result_table=result_table,
         included_entities=[e.entity_name for e in matching],
         excluded_entities=excluded,
         missing_field_entities=missing,

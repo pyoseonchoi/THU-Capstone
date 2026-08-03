@@ -130,11 +130,11 @@ class ClaimVerifier:
                 status = ClaimStatus.UNSUPPORTED
 
             claims.append(ClaimVerification(
-                claim=c.get("claim", ""),
+                claim=c.get("claim") or "",
                 status=status,
-                supporting_evidence_ids=c.get("supporting_evidence_ids", []),
-                operation_id=c.get("operation_id", ""),
-                correction=c.get("correction", ""),
+                supporting_evidence_ids=c.get("supporting_evidence_ids") or [],
+                operation_id=c.get("operation_id") or "",
+                correction=c.get("correction") or "",
             ))
 
         needs_repair = data.get("overall_status", "PASS") == "NEEDS_REPAIR"
@@ -162,7 +162,9 @@ class ClaimVerifier:
         # Attempt repair (limited attempts to avoid loops)
         for attempt in range(MAX_REPAIR_ATTEMPTS):
             unsupported = [
-                c for c in claims if c.status == ClaimStatus.UNSUPPORTED
+                c
+                for c in claims
+                if c.status in {ClaimStatus.UNSUPPORTED, ClaimStatus.CONFLICTING}
             ]
             if not unsupported:
                 break
@@ -176,7 +178,7 @@ class ClaimVerifier:
             repaired = draft_answer
             for c in unsupported:
                 if c.claim in repaired:
-                    repaired = repaired.replace(c.claim, "").strip()
+                    repaired = repaired.replace(c.claim, c.correction).strip()
 
             # Re-verify
             claims, needs_repair = await self.verify(

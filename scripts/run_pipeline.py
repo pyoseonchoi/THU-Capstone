@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.config import PipelineMode, get_settings
+from app.config import get_settings
 from app.logging_config import setup_logging
 from app.pipeline import FullScanPipeline
 from app.schemas import QuestionRequest
@@ -17,15 +17,10 @@ from app.schemas import QuestionRequest
 
 def main():
     parser = argparse.ArgumentParser(description="FULLSCAN-QA Pipeline Runner")
-    parser.add_argument("pdf", type=Path, help="Path to PDF document")
+    parser.add_argument("document", type=Path, help="Path to PDF or TXT document")
     parser.add_argument(
         "-q", "--questions", nargs="+", required=True,
         help="One or more questions to answer",
-    )
-    parser.add_argument(
-        "-m", "--mode", default="FULLSCAN_OPERATOR",
-        choices=["FULLSCAN_OPERATOR", "DIRECT_CONTEXT", "SUMMARY_MAP_REDUCE", "REFINE"],
-        help="Pipeline mode",
     )
     parser.add_argument(
         "-o", "--output", type=Path, default=None,
@@ -42,20 +37,16 @@ def main():
         QuestionRequest(question_id=f"q{i+1}", question=q)
         for i, q in enumerate(args.questions)
     ]
-    mode = PipelineMode(args.mode)
-
     async def run():
         pipeline = FullScanPipeline(settings)
         try:
-            metadata, chunks = await pipeline.process_document(args.pdf)
+            metadata, chunks = await pipeline.process_document(args.document)
             print(
                 f"Document: {metadata.filename}, {metadata.page_count} pages, "
                 f"{len(chunks)} chunks"
             )
 
-            run_result = await pipeline.answer_questions(
-                metadata.document_id, questions, mode=mode
-            )
+            run_result = await pipeline.answer_questions(metadata.document_id, questions)
 
             for ans in run_result.answers:
                 print(f"\n{'='*60}")

@@ -11,18 +11,21 @@ from app.schemas import PipelineAnswer, PipelineRun, QuestionRequest
 
 def answer_to_submission(answer: PipelineAnswer) -> dict[str, Any]:
     """Convert one internal answer to the grader's minimal interface."""
-    failed = answer.final_answer.startswith("Error:")
+    answer_text = answer.final_answer.strip()
+    if answer_text.startswith("Error:") and answer.operation_result:
+        fallback = answer.operation_result.result_value
+        if isinstance(fallback, str) and fallback.strip():
+            answer_text = fallback.strip()
+    failed = not answer_text or answer_text.startswith("Error:")
     entry: dict[str, Any] = {
         "id": answer.question_id,
-        "answer": "" if failed else answer.final_answer,
+        "answer": "" if failed else answer_text,
     }
     evidence: list[str] = []
     if answer.answer_with_evidence:
         evidence.append(answer.answer_with_evidence)
     if answer.operation_result and answer.operation_result.source_pages:
-        pages = ", ".join(
-            str(page) for page in answer.operation_result.source_pages
-        )
+        pages = ", ".join(str(page) for page in answer.operation_result.source_pages)
         evidence.append(f"Source pages/segments: {pages}")
     if evidence:
         entry["evidence"] = evidence

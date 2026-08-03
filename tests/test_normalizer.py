@@ -7,6 +7,7 @@ import pytest
 from app.reduction.normalizer import (
     normalize_date,
     normalize_entity_name,
+    normalize_extracted_value,
     normalize_unit,
     parse_number,
 )
@@ -42,6 +43,9 @@ class TestParseNumber:
 
     def test_negative_parens(self):
         assert parse_number("(456)") == -456.0
+
+    def test_meter_suffix_is_not_treated_as_million(self):
+        assert parse_number("4102m") is None
 
     def test_million_suffix(self):
         assert parse_number("1.5 million") == 1500000.0
@@ -117,6 +121,33 @@ class TestNormalizeDate:
 
     def test_invalid(self):
         assert normalize_date("not a date") is None
+
+    def test_bc_year_preserves_era(self):
+        assert normalize_date("first recorded in 475 BC") == "475 BC"
+
+
+class TestNormalizeExtractedValue:
+    def test_recomputes_scaled_number_from_raw_text(self):
+        assert normalize_extracted_value(
+            "15 million visitors",
+            15,
+            expected_type="number",
+        ) == 15_000_000
+
+    def test_bc_year_overrides_bad_model_normalization(self):
+        assert normalize_extracted_value(
+            "BC",
+            0,
+            expected_type="number",
+            supporting_text="The first recorded eruption was in 475 BC.",
+        ) == "475 BC"
+
+    def test_embedded_metric_number_is_extracted(self):
+        assert normalize_extracted_value(
+            "4102m",
+            None,
+            expected_type="number",
+        ) == 4102
 
 
 class TestNormalizeEntityName:

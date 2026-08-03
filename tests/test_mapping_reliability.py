@@ -12,6 +12,7 @@ from app.llm.usage_tracker import UsageTracker
 from app.mapping.batch_mapper import BatchMapper
 from app.mapping.evidence_mapper import EvidenceMapper, _build_cache_key
 from app.schemas import (
+    ChunkMapResult,
     DocumentChunk,
     ExtractionStatus,
     Operator,
@@ -39,6 +40,15 @@ def _plan(question: str = "What is the value?") -> QueryPlan:
         question_id="q1",
         original_question=question,
         operator=Operator.LOOKUP,
+        target_fields=["value"],
+    )
+
+
+def _operator_plan(question_id: str, operator: Operator) -> QueryPlan:
+    return QueryPlan(
+        question_id=question_id,
+        original_question=question_id,
+        operator=operator,
         target_fields=["value"],
     )
 
@@ -124,6 +134,40 @@ async def test_mapper_preserves_precise_page_from_page_markers(tmp_path):
     assert result.evidence_items[0].page_end == 4
 
 
+@pytest.mark.asyncio
+async def test_mapper_canonicalizes_field_and_repairs_bc_year(tmp_path):
+    plan = QueryPlan(
+        question_id="q1",
+        original_question="When?",
+        operator=Operator.LOOKUP,
+        target_fields=["first recorded eruption year"],
+        extraction_fields=[{
+            "field_name": "first recorded eruption year",
+            "expected_type": "number",
+        }],
+    )
+    router = _Router(response={
+        "results": [{
+            "question_id": "q1",
+            "extraction_status": "evidence_found",
+            "evidence_items": [{
+                "entity_name": "Etna",
+                "field_name": "first recorded eruption year",
+                "raw_value": "BC",
+                "normalized_value": 0,
+                "exact_quote": "The first recorded eruption was in 475 BC.",
+                "page_start": 3,
+            }],
+        }],
+    })
+    mapper = EvidenceMapper(router, UsageTracker(), cache_dir=tmp_path)
+
+    item = (await mapper.map_chunk(_chunk(), [plan]))[0].evidence_items[0]
+
+    assert item.field_name == "first_recorded_eruption_year"
+    assert item.normalized_value == "475 BC"
+
+
 class _ExplodingMapper:
     async def map_chunk(self, chunk, plans):
         raise RuntimeError("task crashed")
@@ -148,3 +192,78 @@ async def test_batch_mapper_records_task_exceptions_for_every_pair():
         result.extraction_status == ExtractionStatus.LLM_FAILED
         for result in results
     )
+
+
+class _UncertainThenCompleteMapper:
+    def __init__(self):
+        self.calls = 0
+
+    async def map_chunk(self, chunk, plans):
+        self.calls += 1
+        status = (
+            ExtractionStatus.UNCERTAIN
+            if self.calls == 1
+            else ExtractionStatus.NO_EVIDENCE
+        )
+        return [
+            ChunkMapResult(
+                chunk_id=chunk.chunk_id,
+                question_id=plan.question_id,
+                extraction_status=status,
+            )
+            for plan in plans
+        ]
+
+
+@pytest.mark.asyncio
+async def test_uncertain_mapping_is_retried():
+    settings = Settings(
+        llm_provider="mistral_api",
+        mistral_api_key="fake",
+        max_retries=1,
+        question_batch_size=1,
+    )
+    raw_mapper = _UncertainThenCompleteMapper()
+    mapper = BatchMapper(raw_mapper, settings)
+
+    results = await mapper.map_all_chunks([_chunk("c1")], [_plan()])
+
+    assert raw_mapper.calls == 2
+    assert results[0].extraction_status == ExtractionStatus.NO_EVIDENCE
+
+
+def test_batch_profiles_keep_absence_and_synthesis_small():
+    settings = Settings(
+        llm_provider="mistral_api",
+        mistral_api_key="fake",
+        question_batch_size=8,
+    )
+    mapper = BatchMapper(_ExplodingMapper(), settings)
+    plans = [
+        *[_operator_plan(f"q{i}", Operator.LOOKUP) for i in range(8)],
+        *[_operator_plan(f"a{i}", Operator.ABSENCE) for i in range(4)],
+        *[_operator_plan(f"s{i}", Operator.GENERAL_SYNTHESIS) for i in range(3)],
+    ]
+
+    batches = mapper._split_plans(plans)
+
+    assert [len(batch) for batch in batches] == [8, 3, 1, 3]
+    assert all(
+        len(batch) <= 3
+        for batch in batches
+        if batch[0].operator == Operator.ABSENCE
+    )
+
+
+def test_cross_section_category_uses_small_mapping_batches():
+    settings = Settings(
+        llm_provider="mistral_api",
+        mistral_api_key="fake",
+        question_batch_size=8,
+    )
+    mapper = BatchMapper(_ExplodingMapper(), settings)
+    plans = [_operator_plan(f"x{i}", Operator.FILTER_LIST) for i in range(3)]
+    for plan in plans:
+        plan.category = "cross_section"
+
+    assert [len(batch) for batch in mapper._split_plans(plans)] == [3]
