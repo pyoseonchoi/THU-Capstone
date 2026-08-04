@@ -132,6 +132,117 @@ function updatePickedCategory() {
   el("picked-category").textContent = picked && picked.category ? picked.category : "미분류";
 }
 
+// ---------- stage -> model badge (see spec's confirmed lookup table) ----------
+
+const STAGE_INFO = {
+  compiling: { label: "문서 컴파일 중", badge: null },
+  mapping: { label: "근거 추출 중 (전수 매핑)", badge: "3B" },
+  repairing: { label: "보정 매핑 중", badge: "24B" },
+  answering: { label: "최종 답변 종합 중", badge: "24B" },
+};
+
+// ---------- run ----------
+
+function resetLog() {
+  el("log-list").innerHTML = "";
+}
+
+async function startRun(questions) {
+  clearError();
+  resetLog();
+  try {
+    const res = await fetch(`${API_BASE}/answer-jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_id: state.documentId, questions }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `실행 시작 실패 (${res.status})`);
+    }
+    const job = await res.json();
+    streamProgress(job.job_id);
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+function streamProgress(jobId) {
+  const source = new EventSource(`${API_BASE}/answer-jobs/${jobId}/stream`);
+
+  source.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (!data.stage) return; // final-state replay payload has no "stage" guarantee; skip
+    appendLogRow(data);
+    updateProgressStats(data);
+  };
+
+  source.addEventListener("done", async () => {
+    source.close();
+    try {
+      const res = await fetch(`${API_BASE}/answer-jobs/${jobId}`);
+      const job = await res.json();
+      if (job.status === "completed") {
+        renderResult(job.result);
+      } else {
+        showError(job.error || "실행이 실패했습니다.");
+      }
+    } catch (err) {
+      showError(`결과를 불러오지 못했습니다: ${err.message}`);
+    }
+  });
+
+  source.onerror = () => {
+    showError("진행 로그 연결이 끊겼습니다. 새로고침 후 이어보기를 시도하세요 (진행 상황은 서버에 남아 있습니다).");
+  };
+}
+
+function appendLogRow(data) {
+  const info = STAGE_INFO[data.stage] || { label: data.stage, badge: null };
+  const li = document.createElement("li");
+  li.dataset.badge = info.badge || "";
+  const badgeHtml = info.badge
+    ? `<span class="chip ${info.badge === "3B" ? "chip-3b" : "chip-24b"}">${info.badge}</span>`
+    : "";
+  const failedLabel = data.failed ? `, 실패 ${data.failed}` : "";
+  li.innerHTML = `
+    <div class="dot active"></div>
+    <div>
+      <div class="step">${info.label} (${data.processed}/${data.total}${failedLabel})</div>
+      <div class="meta">${badgeHtml}<span class="time mono">${new Date().toLocaleTimeString("ko-KR")}</span></div>
+    </div>
+  `;
+  el("log-list").appendChild(li);
+  applyLogFilter();
+  el("log-list").scrollTop = el("log-list").scrollHeight;
+}
+
+function applyLogFilter() {
+  document.querySelectorAll("#log-list li").forEach((li) => {
+    const matches = state.logFilter === "all" || li.dataset.badge === state.logFilter;
+    li.style.display = matches ? "flex" : "none";
+  });
+}
+
+function updateProgressStats(data) {
+  el("stat-progress").textContent = `${data.processed}/${data.total}`;
+  const info = STAGE_INFO[data.stage];
+  if (info && info.badge) {
+    state.stageTally[info.badge] += 1;
+    updateDonut();
+  }
+}
+
+function updateDonut() {
+  const total = state.stageTally["3B"] + state.stageTally["24B"];
+  if (total === 0) return;
+  const pct3b = Math.round((state.stageTally["3B"] / total) * 100);
+  const pct24b = 100 - pct3b;
+  el("donut").style.background = `conic-gradient(var(--slate) 0 ${pct3b}%, var(--amber) ${pct3b}% 100%)`;
+  el("donut-3b-pct").textContent = `${pct3b}%`;
+  el("donut-24b-pct").textContent = `${pct24b}%`;
+}
+
 // ---------- wiring ----------
 
 function initHandlers() {
@@ -149,6 +260,25 @@ function initHandlers() {
   });
 
   el("question-picker").addEventListener("change", updatePickedCategory);
+
+  el("run-selected-btn").addEventListener("click", () => {
+    const picked = el("question-picker").value;
+    const question = state.questions.find((q) => q.question_id === picked);
+    if (question) startRun([question]);
+  });
+
+  el("run-all-btn").addEventListener("click", () => {
+    startRun(state.questions);
+  });
+
+  document.querySelectorAll(".pillnav button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".pillnav button").forEach((b) => b.classList.remove("on"));
+      btn.classList.add("on");
+      state.logFilter = btn.dataset.filter;
+      applyLogFilter();
+    });
+  });
 }
 
 document.addEventListener("DOMContentLoaded", initHandlers);
