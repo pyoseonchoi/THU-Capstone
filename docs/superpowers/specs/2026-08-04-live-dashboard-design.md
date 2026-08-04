@@ -76,15 +76,23 @@ contradicts this spec's own boundary ("no changes to ... mapping ...
 logic") and risks colliding with the pipeline pair's active work.
 
 Instead: models are already assigned statically per stage via config
-(`mapper_model`, `answer_model`, ...; `batch_mapper.repair_failures` even
-uses `model_override=answer_model` for its retries, so stage already implies
-model). `web/app.js` keeps a small static lookup —
-`{compiling: null, mapping: "ministral-3b-2512", repairing: "ministral-3b-2512" /* or answer_model, see below */, answering: "mistral-small-3-2"}`
-— and renders the badge from the incoming `stage` field alone. Zero touches
-to `app/pipeline.py` or the mapping files. (Confirm the `repairing` stage's
-actual model with the pipeline pair before hardcoding it — `repair_failures`
-was observed using `answer_model` for at least some retries — but that's a
-one-line lookup-table fix either way, not an API contract change.)
+(`mapper_model`, `answer_model`, ...). Traced against the live V3 path in
+`app/pipeline.py`:
+
+| stage | model | why |
+|---|---|---|
+| `compiling` | — | deterministic, no LLM call |
+| `mapping` | `mapper_model` (`ministral-3b-2512`) | `ExhaustiveMapper.map_document`, no override |
+| `repairing` | `answer_model` (`mistral-small-3-2`) | `ExhaustiveMapper.repair_failures` (`app/v3/exhaustive_mapper.py`) is called with `model_override=answer_model` unconditionally |
+| `answering` | `answer_model` (`mistral-small-3-2`) | `V3Answerer._call`, no override |
+
+`web/app.js` keeps this as a static lookup and renders the badge from the
+incoming `stage` field alone. Zero touches to `app/pipeline.py` or the
+mapping files. (`app/planning/question_planner.py` defines a `planning`
+stage but it's dead code on the live route — `pipeline.py` calls the
+synchronous `compile_questions` from `app/v3/question_compiler.py` instead,
+which has no progress callback — so this 4-row table is exhaustive for real
+traffic.)
 
 ## Frontend (`web/`)
 
@@ -157,7 +165,3 @@ framework):
 - Alpine.js (CDN, no build step) as a fallback if hand-rolled state sync in
   `app.js` gets messy — not decided upfront, add only if it's actually
   needed.
-- Confirm which model `repairing` actually uses with the pipeline pair
-  (observed `batch_mapper.repair_failures` passing `model_override=answer_model`
-  for at least some retries) before finalizing the client-side stage→model
-  lookup table.
