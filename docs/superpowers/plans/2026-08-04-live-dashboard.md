@@ -1189,7 +1189,8 @@ function downloadSubmission() {
 // NOTE: app/llm/broker.py passes the course broker's /usage response through
 // verbatim -- its exact field names aren't confirmed by this plan. Run
 // `curl http://127.0.0.1:8000/usage` once the .env broker key is configured
-// (Task 8) and adjust formatUsageCost's field lookups below to match.
+// (Task 7's manual verification step) and adjust formatUsageCost's field
+// lookups below to match.
 
 function formatUsageCost(usage) {
   const cost = usage.total_cost ?? usage.cost ?? usage.total_cost_usd;
@@ -1261,7 +1262,171 @@ git commit -m "feat(web): render results, download submission, poll usage"
 
 ---
 
-## Task 8: Final check
+## Task 8: Read-only pipeline parameter panel
+
+Added after professor feedback: chatbot UI polish scores less than expected; a simple
+display of the pipeline's current parameters (chunk size, batch sizes, models, etc.) is
+more valuable. Scoped to **read-only** — actually changing chunk size and re-running is a
+bigger change that touches `app/chunking/` and `app/pipeline.py`'s signatures (the pipeline
+pair's files), out of scope for today.
+
+**Files:**
+- Modify: `app/api/main.py` (add one new route)
+- Test: `tests/test_api.py`
+- Modify: `web/index.html` (one new card)
+- Modify: `web/app.js` (one fetch + render function)
+
+- [ ] **Step 1: Write the failing backend test**
+
+Add to `tests/test_api.py`:
+
+```python
+class TestPipelineSettings:
+    def test_pipeline_settings_excludes_secrets(self, client):
+        response = client.get("/pipeline-settings")
+        assert response.status_code == 200
+        data = response.json()
+        assert "mistral_api_key" not in data
+        assert "chunk_target_tokens" in data
+        assert "mapper_model" in data
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_api.py::TestPipelineSettings -v`
+Expected: FAIL — 404, route doesn't exist.
+
+- [ ] **Step 3: Add the route**
+
+Add anywhere after the `/usage` route in `app/api/main.py` (locate `async def broker_usage():`
+by content, not line number — see the caveat under Task 2):
+
+```python
+@app.get("/pipeline-settings")
+async def pipeline_settings():
+    """Expose the current non-secret pipeline configuration for display only."""
+    settings = get_settings()
+    return {
+        "mapper_model": settings.mapper_model,
+        "answer_model": settings.answer_model,
+        "verifier_model": settings.verifier_model,
+        "planner_model": settings.planner_model,
+        "chunk_target_tokens": settings.chunk_target_tokens,
+        "chunk_overlap_tokens": settings.chunk_overlap_tokens,
+        "question_batch_size": settings.question_batch_size,
+        "record_batch_size": settings.record_batch_size,
+        "max_concurrent_requests": settings.max_concurrent_requests,
+        "request_timeout_seconds": settings.request_timeout_seconds,
+        "max_retries": settings.max_retries,
+        "pipeline_mode": settings.pipeline_mode.value,
+        "llm_temperature": settings.llm_temperature,
+        "llm_top_p": settings.llm_top_p,
+        "llm_seed": settings.llm_seed,
+        "team_name": settings.team_name,
+    }
+```
+
+Deliberately excludes `mistral_api_key`, `llm_base_url`, `ollama_base_url`, and `data_dir` —
+either secret or not useful to show.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_api.py::TestPipelineSettings -v`
+Expected: PASS
+
+- [ ] **Step 5: Run the full backend suite**
+
+Run: `python -m pytest tests/ -v -m "not live"`
+Expected: all PASS.
+
+- [ ] **Step 6: Commit the backend change**
+
+```bash
+git add app/api/main.py tests/test_api.py
+git commit -m "feat(api): add read-only pipeline-settings endpoint"
+```
+
+- [ ] **Step 7: Add the display card to `web/index.html`**
+
+Insert this new card right before the `<div class="history">` block:
+
+```html
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-head"><h2>파이프라인 파라미터</h2><span class="sub">읽기전용 · .env 기준</span></div>
+  <div class="stats" id="settings-grid" style="margin-bottom:0;">
+    <div class="stat-card"><div class="l">불러오는 중…</div></div>
+  </div>
+</div>
+```
+
+- [ ] **Step 8: Render it from `web/app.js`**
+
+Append:
+
+```javascript
+// ---------- pipeline parameters (read-only) ----------
+
+const SETTINGS_LABELS = {
+  mapper_model: "매핑 모델 (3B)",
+  answer_model: "답변/보정 모델 (24B)",
+  verifier_model: "검증 모델",
+  planner_model: "플래너 모델",
+  chunk_target_tokens: "청크 목표 토큰",
+  chunk_overlap_tokens: "청크 오버랩 토큰",
+  question_batch_size: "질문 배치 크기",
+  record_batch_size: "레코드 배치 크기",
+  max_concurrent_requests: "최대 동시 요청",
+  request_timeout_seconds: "요청 타임아웃(초)",
+  max_retries: "최대 재시도",
+  pipeline_mode: "파이프라인 모드",
+  llm_temperature: "temperature",
+  llm_top_p: "top_p",
+  llm_seed: "seed",
+  team_name: "팀 이름",
+};
+
+async function loadPipelineSettings() {
+  try {
+    const res = await fetch(`${API_BASE}/pipeline-settings`);
+    if (!res.ok) return;
+    const settings = await res.json();
+    const grid = el("settings-grid");
+    grid.innerHTML = "";
+    Object.entries(settings).forEach(([key, value]) => {
+      const card = document.createElement("div");
+      card.className = "stat-card";
+      card.innerHTML = `
+        <div class="l">${SETTINGS_LABELS[key] || key}</div>
+        <div class="n" style="font-size:15px;">${value}</div>
+      `;
+      grid.appendChild(card);
+    });
+  } catch {
+    // best-effort display only
+  }
+}
+```
+
+Call it once at startup — in the `DOMContentLoaded` handler from Task 7 Step 2, add
+`loadPipelineSettings();` alongside `initHandlers(); pollUsage(); ...`.
+
+- [ ] **Step 9: Verify manually**
+
+With both servers running, reload `http://127.0.0.1:5500`. Confirm the new card shows real
+values pulled from the repo's `.env` (chunk sizes, batch sizes, both model names, etc.), and
+that no secret (`mistral_api_key`) appears anywhere in the page or in the Network tab
+response body for `/pipeline-settings`.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add web/index.html web/app.js
+git commit -m "feat(web): display read-only pipeline parameters"
+```
+
+---
+
+## Task 9: Final check
 
 **Files:** none (verification only)
 
