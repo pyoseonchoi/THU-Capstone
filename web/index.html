@@ -48,55 +48,53 @@
       </div>
     </div>
 
-    <div class="row2">
-      <div class="card">
-        <div class="card-head"><h2>Document &amp; Question Set</h2><span class="sub">Upload</span></div>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-head"><h2>Document &amp; Question Set</h2><span class="sub">Upload</span></div>
 
-        <div class="dropzone" id="doc-dropzone">
-          <div class="icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11M12 15l7-4M12 15l-7-4M5 11V7l7-4 7 4v4"/></svg>
-          </div>
-          <div class="t">Drag a document here, or click to upload</div>
-          <div class="d">.txt · .pdf — up to 32MB</div>
-          <label class="browse" for="doc-input">Choose document</label>
-          <input type="file" id="doc-input" accept=".txt,.pdf" hidden>
+      <div class="dropzone" id="doc-dropzone">
+        <div class="icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11M12 15l7-4M12 15l-7-4M5 11V7l7-4 7 4v4"/></svg>
         </div>
-
-        <div class="row">
-          <label class="browse" for="questions-input">Choose question set (JSON)</label>
-          <input type="file" id="questions-input" accept=".json" hidden>
-          <span class="sub" id="questions-count-label">not uploaded yet</span>
-        </div>
-
-        <div class="filelist" id="file-list"></div>
-
-        <div class="chunk-summary" id="chunk-summary" style="display:none;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
-          <span>Split into <b id="chunk-summary-count">0</b> chunks · document uploaded</span>
-        </div>
-
-        <div class="error-banner" id="upload-error"></div>
+        <div class="t">Drag a document here, or click to upload</div>
+        <div class="d">.txt · .pdf — up to 32MB</div>
+        <label class="browse" for="doc-input">Choose document</label>
+        <input type="file" id="doc-input" accept=".txt,.pdf" hidden>
       </div>
 
-      <div class="card">
-        <div class="card-head"><h2>Run a Question</h2><span class="sub">Ask</span></div>
+      <div class="row">
+        <label class="browse" for="questions-input">Choose question set (JSON)</label>
+        <input type="file" id="questions-input" accept=".json" hidden>
+        <span class="sub" id="questions-count-label">not uploaded yet</span>
+      </div>
 
-        <div class="row" style="margin-top:0;">
-          <select id="question-picker" disabled>
-            <option>Upload a question set first</option>
-          </select>
-        </div>
-        <div class="row">
-          <span class="chip chip-cat" id="picked-category">uncategorized</span>
-          <span class="spacer"></span>
-          <button class="primary" id="run-selected-btn" disabled>Run this question</button>
-          <button class="primary" id="run-all-btn" disabled>Run all</button>
-        </div>
+      <div class="filelist" id="file-list"></div>
 
-        <div class="answer" id="answer-block" style="display:none;">
-          <div class="t" id="answer-text"></div>
-          <div class="answer-meta" id="answer-meta"></div>
-        </div>
+      <div class="chunk-summary" id="chunk-summary" style="display:none;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+        <span>Split into <b id="chunk-summary-count">0</b> chunks · document uploaded</span>
+      </div>
+
+      <div class="error-banner" id="upload-error"></div>
+    </div>
+
+    <div class="card ask-hero">
+      <div class="card-head"><h2>Ask a Question</h2></div>
+
+      <div class="row" style="margin-top:0;">
+        <select id="question-picker" disabled>
+          <option>Upload a question set first</option>
+        </select>
+      </div>
+      <div class="row">
+        <span class="chip chip-cat" id="picked-category">uncategorized</span>
+        <span class="spacer"></span>
+        <button class="primary" id="run-selected-btn" disabled>Run this question</button>
+        <button class="primary" id="run-all-btn" disabled>Run all</button>
+      </div>
+
+      <div class="answer" id="answer-block" style="display:none;">
+        <div class="t" id="answer-text"></div>
+        <div class="answer-meta" id="answer-meta"></div>
       </div>
     </div>
 
