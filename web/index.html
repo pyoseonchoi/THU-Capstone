@@ -4,15 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Long-Context Challenge — Pipeline Dashboard</title>
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=team-1">
 </head>
 <body>
 <div class="app">
 
-  <aside class="sidebar">
-    <div class="brand"><div class="mark">LC</div><span>LongContext</span></div>
-
-    <div class="index-card">
+  <aside class="sidebar status-widget">
+    <button class="status-toggle" id="status-toggle" type="button" aria-expanded="false" aria-controls="status-panel">
+      <span class="status-toggle-label">Document status</span>
+      <span class="status-toggle-value" id="status-toggle-value">0 / 0</span>
+    </button>
+    <div class="index-card status-panel" id="status-panel" aria-hidden="true">
       <div class="t">Document status</div>
       <div class="d" id="index-doc-label">Upload a document</div>
       <div class="bar"><i id="index-bar"></i></div>
@@ -22,8 +24,23 @@
 
   <main>
     <div class="topbar">
+      <div class="brand body-brand">
+        <div class="mark">LC</div>
+        <div class="brand-copy">
+          <span>LongContext</span>
+          <small>Team Ulkeke · 울크크</small>
+        </div>
+      </div>
       <h1>Pipeline Dashboard</h1>
     </div>
+
+    <nav class="section-tabs" aria-label="Dashboard sections">
+      <span class="section-tab-indicator" aria-hidden="true"></span>
+      <button class="section-tab on" type="button" data-section-target="upload-section">Upload Files</button>
+      <button class="section-tab" type="button" data-section-target="question-section">Run Questions</button>
+      <button class="section-tab" type="button" data-section-target="progress-section">Progress</button>
+      <button class="section-tab" type="button" data-section-target="results-section">Results</button>
+    </nav>
 
     <div class="stats">
       <div class="stat-card dark">
@@ -48,7 +65,7 @@
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:14px;">
+    <section class="card section-panel" id="upload-section" style="margin-bottom:14px;">
       <div class="card-head"><h2>Document &amp; Question Set</h2><span class="sub">Upload</span></div>
 
       <div class="upload-grid">
@@ -88,29 +105,33 @@
       </div>
 
       <div class="error-banner" id="upload-error"></div>
-    </div>
+    </section>
 
-    <div class="card ask-hero">
+    <section class="card ask-hero section-panel" id="question-section">
       <div class="card-head"><h2>Ask a Question</h2></div>
 
-      <div class="row" style="margin-top:0;">
-        <select id="question-picker" disabled>
+      <div class="question-picker-panel">
+        <div class="question-picker-summary" id="question-picker-summary">Upload a question set to browse questions.</div>
+        <select id="question-picker" class="question-picker-list" disabled size="1">
           <option>Upload a question set first</option>
         </select>
       </div>
       <div class="row">
         <span class="chip chip-cat" id="picked-category">uncategorized</span>
         <span class="spacer"></span>
-        <button class="primary" id="run-selected-btn" disabled>Run this question</button>
-        <button class="primary" id="run-all-btn" disabled>Run all</button>
+        <div class="ask-button-group" aria-label="Question run actions">
+          <button class="primary" id="run-selected-btn" disabled>Run this question</button>
+          <button class="primary" id="run-all-btn" disabled>Run all</button>
+        </div>
       </div>
 
       <div class="answer" id="answer-block" style="display:none;">
         <div class="t" id="answer-text"></div>
         <div class="answer-meta" id="answer-meta"></div>
       </div>
-    </div>
+    </section>
 
+    <section class="section-panel section-stack" id="progress-section">
     <div class="row2">
       <div class="card">
         <div class="card-head">
@@ -147,8 +168,9 @@
         <div class="stat-card"><div class="l">Loading…</div></div>
       </div>
     </div>
+    </section>
 
-    <div class="history">
+    <section class="history section-panel" id="results-section">
       <div class="card-head" style="margin-bottom:12px;">
         <h2 style="font-size:15px;">Question History</h2>
         <span class="sub" id="submission-progress-label" style="margin-left:auto;"></span>
@@ -162,10 +184,10 @@
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   </main>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=question-listbox-1"></script>
 </body>
 </html>
