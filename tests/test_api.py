@@ -136,6 +136,16 @@ class TestAnswerJobStream:
         assert "event: done" in body
 
 
+class TestPipelineSettings:
+    def test_pipeline_settings_excludes_secrets(self, client):
+        response = client.get("/pipeline-settings")
+        assert response.status_code == 200
+        data = response.json()
+        assert "mistral_api_key" not in data
+        assert "chunk_target_tokens" in data
+        assert "mapper_model" in data
+
+
 class TestDocumentUpload:
     def test_txt_upload_is_accepted(self, client, monkeypatch, tmp_path):
         class FakeStore:

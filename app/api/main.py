@@ -75,6 +75,30 @@ async def broker_usage():
         raise HTTPException(502, str(exc)) from exc
 
 
+@app.get("/pipeline-settings")
+async def pipeline_settings():
+    """Expose the current non-secret pipeline configuration for display only."""
+    settings = get_settings()
+    return {
+        "mapper_model": settings.mapper_model,
+        "answer_model": settings.answer_model,
+        "verifier_model": settings.verifier_model,
+        "planner_model": settings.planner_model,
+        "chunk_target_tokens": settings.chunk_target_tokens,
+        "chunk_overlap_tokens": settings.chunk_overlap_tokens,
+        "question_batch_size": settings.question_batch_size,
+        "record_batch_size": settings.record_batch_size,
+        "max_concurrent_requests": settings.max_concurrent_requests,
+        "request_timeout_seconds": settings.request_timeout_seconds,
+        "max_retries": settings.max_retries,
+        "pipeline_mode": settings.pipeline_mode.value,
+        "llm_temperature": settings.llm_temperature,
+        "llm_top_p": settings.llm_top_p,
+        "llm_seed": settings.llm_seed,
+        "team_name": settings.team_name,
+    }
+
+
 # ---------- Documents ----------
 
 class DocumentResponse(BaseModel):
