@@ -283,6 +283,31 @@ async def get_answer_job(job_id: str):
     return job
 
 
+@app.get("/answer-jobs/{job_id}/stream")
+async def stream_answer_job(job_id: str):
+    """Stream progress events for an answer job as Server-Sent Events."""
+    job = _answer_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Answer job not found")
+    queue = _answer_job_queues.get(job_id)
+
+    async def event_source():
+        import json
+
+        if queue is None:
+            yield f"data: {json.dumps(job)}\n\n"
+            yield "event: done\ndata: {}\n\n"
+            return
+        while True:
+            event = await queue.get()
+            if event is None:
+                yield "event: done\ndata: {}\n\n"
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_source(), media_type="text/event-stream")
+
+
 # ---------- Direct answer (multipart) ----------
 
 @app.post("/answer-direct")

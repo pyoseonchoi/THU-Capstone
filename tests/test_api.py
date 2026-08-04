@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api import main as api_main
@@ -97,6 +98,42 @@ class TestAnswerJobProgressQueue:
             {"stage": "answering", "processed": 2, "total": 2, "failed": 0},
         ]
         assert api_main._answer_jobs[job_id]["status"] == "completed"
+
+
+class TestAnswerJobStream:
+    async def test_stream_emits_queued_events_then_done(self):
+        job_id = "job-stream-1"
+        api_main._answer_jobs[job_id] = {"job_id": job_id, "status": "running"}
+        queue = asyncio.Queue()
+        queue.put_nowait({"stage": "mapping", "processed": 1, "total": 2, "failed": 0})
+        queue.put_nowait(None)
+        api_main._answer_job_queues[job_id] = queue
+
+        response = await api_main.stream_answer_job(job_id)
+        chunks = [chunk async for chunk in response.body_iterator]
+        body = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+
+        assert '"stage": "mapping"' in body
+        assert body.strip().endswith("event: done\ndata: {}")
+
+    async def test_stream_of_unknown_job_returns_404(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await api_main.stream_answer_job("does-not-exist")
+        assert exc_info.value.status_code == 404
+
+    async def test_stream_of_finished_job_replays_final_state_immediately(self):
+        job_id = "job-stream-2"
+        api_main._answer_jobs[job_id] = {
+            "job_id": job_id, "status": "completed", "stage": "answering",
+        }
+        api_main._answer_job_queues.pop(job_id, None)
+
+        response = await api_main.stream_answer_job(job_id)
+        chunks = [chunk async for chunk in response.body_iterator]
+        body = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+
+        assert '"status": "completed"' in body
+        assert "event: done" in body
 
 
 class TestDocumentUpload:
