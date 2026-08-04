@@ -259,34 +259,69 @@ function updateDonut() {
 }
 
 // ---------- result rendering ----------
+// Every /answer-jobs call only answers the questions it was given -- it is
+// NOT cumulative on the server. If we replaced state.submission wholesale on
+// every run, downloading right after a single "Run this question" test would
+// silently produce a submission.json containing just that one answer. So we
+// merge answers by id into a running submission instead, and surface how
+// many of the loaded questions are actually covered before download.
+
+function mergeSubmission(newSubmission) {
+  const merged = state.submission ? { ...state.submission } : { answers: [] };
+  if (newSubmission.team) merged.team = newSubmission.team;
+  if (newSubmission.notes) merged.notes = newSubmission.notes;
+  const byId = new Map((merged.answers || []).map((a) => [a.id, a]));
+  (newSubmission.answers || []).forEach((a) => byId.set(a.id, a));
+  merged.answers = Array.from(byId.values());
+  state.submission = merged;
+}
+
+function updateSubmissionProgressLabel() {
+  const answered = state.submission ? state.submission.answers.length : 0;
+  const total = state.questions.length;
+  el("submission-progress-label").textContent = total
+    ? `${answered} / ${total} answered`
+    : "";
+}
+
+function upsertHistoryRow(answer, question) {
+  const tbody = el("history-body");
+  if (tbody.dataset.seeded !== "true") {
+    tbody.innerHTML = "";
+    tbody.dataset.seeded = "true";
+  }
+  const failed = Boolean(answer.warnings && answer.warnings.length > 0);
+  const rowHtml = `
+    <td class="qid mono">${answer.question_id}</td>
+    <td class="qtext">${question ? question.question : ""}</td>
+    <td><span class="chip chip-cat">${question && question.category ? question.category : "uncategorized"}</span></td>
+    <td><span class="status-pill ${failed ? "" : "ok"}">${failed ? "failed" : "done"}</span></td>
+  `;
+  const existing = tbody.querySelector(`tr[data-qid="${answer.question_id}"]`);
+  if (existing) {
+    existing.innerHTML = rowHtml;
+  } else {
+    const row = document.createElement("tr");
+    row.dataset.qid = answer.question_id;
+    row.innerHTML = rowHtml;
+    tbody.appendChild(row);
+  }
+}
 
 function renderResult(result) {
-  state.submission = result.submission;
+  mergeSubmission(result.submission);
   el("download-submission-btn").disabled = false;
+  updateSubmissionProgressLabel();
 
   if (result.usage) {
     const total = (result.usage.total_input_tokens || 0) + (result.usage.total_output_tokens || 0);
     el("stat-tokens").textContent = total.toLocaleString("en-US");
   }
 
-  const tbody = el("history-body");
-  if (tbody.dataset.seeded !== "true") {
-    tbody.innerHTML = "";
-    tbody.dataset.seeded = "true";
-  }
-
   let lastAnswer = null;
   result.answers.forEach((answer) => {
     const question = state.questions.find((q) => q.question_id === answer.question_id);
-    const failed = Boolean(answer.warnings && answer.warnings.length > 0);
-    const row = document.createElement("tr");
-    row.innerHTML = `
-      <td class="qid mono">${answer.question_id}</td>
-      <td class="qtext">${question ? question.question : ""}</td>
-      <td><span class="chip chip-cat">${question && question.category ? question.category : "uncategorized"}</span></td>
-      <td><span class="status-pill ${failed ? "" : "ok"}">${failed ? "failed" : "done"}</span></td>
-    `;
-    tbody.appendChild(row);
+    upsertHistoryRow(answer, question);
     lastAnswer = { answer, question };
   });
 
@@ -305,6 +340,15 @@ function renderAnswerCard(answer, question) {
 
 function downloadSubmission() {
   if (!state.submission) return;
+  const answered = state.submission.answers.length;
+  const total = state.questions.length;
+  if (total && answered < total) {
+    const proceed = confirm(
+      `Only ${answered} of ${total} loaded questions have been answered so far. ` +
+      `Download the partial submission.json anyway?`
+    );
+    if (!proceed) return;
+  }
   const blob = new Blob([JSON.stringify(state.submission, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
