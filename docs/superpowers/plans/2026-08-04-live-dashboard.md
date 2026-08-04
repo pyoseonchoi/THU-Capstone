@@ -94,6 +94,12 @@ git commit -m "feat(api): add CORS middleware for the local dashboard frontend"
 - Modify: `app/api/main.py:196-257`
 - Test: `tests/test_api.py`
 
+> Line numbers below (and in Task 3) are computed against `app/api/main.py` as it stood
+> *before* Task 1's edits. Task 1 adds ~9 lines above this section, so the real line numbers
+> will have shifted by the time you get here. Locate each edit by matching the quoted code
+> snippet's content (e.g. search for `_answer_jobs: dict[str, dict] = {}`), not by trusting
+> the line number literally.
+
 - [ ] **Step 1: Write the failing test**
 
 Add to `tests/test_api.py` (needs `import asyncio` and `from app.schemas import PipelineAnswer,
@@ -259,6 +265,9 @@ git commit -m "feat(api): queue progress events per answer job"
 **Files:**
 - Modify: `app/api/main.py` (add route after `get_answer_job`, currently ending at line 266)
 - Test: `tests/test_api.py`
+
+> Same caveat as Task 2: this line number is pre-Task-1/2. Find `get_answer_job`'s closing
+> `return job` by content and add the new route right after it, not at a literal line 266.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1208,10 +1217,10 @@ In the handlers function (renamed `initHandlers` in Task 6), add:
   el("download-submission-btn").addEventListener("click", downloadSubmission);
 ```
 
-Change the bottom of the file from:
+Change the bottom of the file from (this is what Task 6 Step 2 left it as):
 
 ```javascript
-document.addEventListener("DOMContentLoaded", initUploadHandlers);
+document.addEventListener("DOMContentLoaded", initHandlers);
 ```
 
 to:
