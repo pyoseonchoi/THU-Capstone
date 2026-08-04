@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     # Question batching
     question_batch_size: int = Field(default=4, ge=1, le=10)
     record_batch_size: int = Field(default=3, ge=1, le=6)
+    record_batch_max_characters: int = Field(default=18_000, ge=4_000, le=100_000)
 
     # Storage
     data_dir: Path = Path("./data")
@@ -69,8 +70,9 @@ class Settings(BaseSettings):
     # Submission metadata
     team_name: str = ""
     submission_notes: str = (
-        "Compiled document catalog, deterministic structured reduction, exhaustive "
-        "coverage matrices, and evidence-grounded hierarchical synthesis."
+        "Schema-compiled entity and table catalogs, caption-validated contents indexes, "
+        "composable Python reduction, exhaustive coverage matrices, and targeted "
+        "hierarchical synthesis."
     )
 
     # LLM parameters
@@ -80,9 +82,9 @@ class Settings(BaseSettings):
 
     # Prompt versions – bump when prompts change to invalidate cache
     prompt_version_planner: str = "v3"
-    prompt_version_mapper: str = "v3"
+    prompt_version_mapper: str = "v5"
     prompt_version_verifier: str = "v3"
-    prompt_version_answer: str = "v3"
+    prompt_version_answer: str = "v4"
 
     model_config = {
         # The workspace file holds secrets; the project file holds runtime config.

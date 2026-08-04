@@ -13,7 +13,11 @@ from app.llm.usage_tracker import UsageTracker
 from app.schemas import OperationResult, Operator, PipelineAnswer, UsageRecord
 from app.submission import answer_to_submission
 from app.v3.answerer import V3Answerer
-from app.v3.exhaustive_mapper import ExhaustiveMapper, _validated_topic_level
+from app.v3.exhaustive_mapper import (
+    ExhaustiveMapper,
+    _exact_topic_quote,
+    _validated_topic_level,
+)
 from app.v3.models import (
     CompiledDocument,
     CompiledRecord,
@@ -48,6 +52,28 @@ def _icehotel_evidence() -> EvidenceCandidate:
         page=1,
         confidence=1.0,
     )
+
+
+def test_literal_absence_declaration_is_not_reclassified_as_presence():
+    record = CompiledRecord(
+        record_id="closing",
+        ordinal=1,
+        title="Closing synthesis",
+        page_start=9,
+        page_end=9,
+        anchor_page=9,
+        text=(
+            "[Page 9]\nThe guide does not substantively discuss accessibility, "
+            "the GeoArk Alliance, or cyber sabotage."
+        ),
+    )
+
+    assert _exact_topic_quote(record, "GeoArk Alliance") is None
+
+    record.text += " A GeoArk Alliance project coordinates measurements across borders."
+    match = _exact_topic_quote(record, "GeoArk Alliance")
+    assert match is not None
+    assert "coordinates measurements" in match[0]
 
 
 class AnswerRouter:
@@ -185,7 +211,7 @@ def test_poaching_requires_illegal_hunting_evidence():
     )
 
 
-def test_absence_reducer_ignores_unique_low_support_outlier():
+def test_absence_reducer_never_ignores_positive_support():
     topics = ["poaching", "wartime", "glacier retreat", "visitor pressure"]
     plan = V3QuestionPlan(
         question_id="q1",
@@ -223,9 +249,7 @@ def test_absence_reducer_ignores_unique_low_support_outlier():
         allow_partial=True,
     )
 
-    assert reduced is not None
-    assert reduced.answer.startswith("poaching is the only subject")
-    assert any("semantic outlier" in warning for warning in reduced.warnings)
+    assert reduced is None
 
 
 class RepairFakeClient(BaseLLMClient):

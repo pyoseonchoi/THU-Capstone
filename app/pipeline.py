@@ -7,6 +7,7 @@ questions, then reduce and synthesize from validated evidence.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -38,10 +39,12 @@ from app.schemas import (
 from app.storage.run_store import RunStore
 from app.submission import IncrementalSubmissionWriter
 from app.v3.answerer import V3Answerer
-from app.v3.compiler import all_mapping_records, compile_document
+from app.v3.compiler import COMPILER_VERSION, all_mapping_records, compile_document
 from app.v3.exhaustive_mapper import ExhaustiveMapper
 from app.v3.models import (
     CompiledDocument,
+    CompiledRecord,
+    EvidencePacket,
     ExecutionResult,
     Strategy,
     V3MapResult,
@@ -54,6 +57,7 @@ from app.v3.reducers import (
     reduce_mapped_structure,
     status_counts,
 )
+from app.v3.structure_augmenter import StructureAugmenter
 from app.v3.structured_executor import execute_structured
 
 logger = get_logger("pipeline.v3")
@@ -78,6 +82,7 @@ class FullScanPipeline:
         self._tracker = UsageTracker()
         self._mapper = ExhaustiveMapper(self._router, self._tracker, settings)
         self._answerer = V3Answerer(self._router, self._tracker)
+        self._augmenter = StructureAugmenter(self._router, self._tracker, settings)
         self._store = RunStore(settings)
 
     async def process_document(
@@ -97,6 +102,7 @@ class FullScanPipeline:
 
         save_parsed_output(metadata, pages, self._settings.parsed_dir)
         compiled = compile_document(metadata.document_id, pages)
+        compiled = await self._augmenter.augment(compiled)
         records = all_mapping_records(compiled)
         chunks = [
             self._record_chunk(metadata.document_id, index, record)
@@ -116,6 +122,20 @@ class FullScanPipeline:
                 "catalog_records": len(compiled.records),
                 "supplementary_records": len(compiled.supplementary_records),
                 "mapping_records": len(records),
+                "registry_trusted": compiled.registry_trusted,
+                "registry_signals": compiled.registry_signals,
+                "tables": [
+                    {
+                        "table_id": table.table_id,
+                        "number": table.number,
+                        "rows": len(table.rows),
+                        "trusted": table.trusted,
+                    }
+                    for table in compiled.tables
+                ],
+                "contents_entries": len(compiled.contents_entries),
+                "contents_trusted": compiled.contents_trusted,
+                "field_catalog": compiled.field_catalog,
                 "warnings": compiled.warnings,
             },
         )
@@ -145,13 +165,31 @@ class FullScanPipeline:
 
     def _load_or_compile(self, document_id: str) -> CompiledDocument | None:
         compiled = self._store.load_compiled_document(document_id)
-        if compiled is not None:
+        if compiled is not None and compiled.compiler_version == COMPILER_VERSION:
             return compiled
         path = self._settings.parsed_dir / f"{document_id}_parsed.json"
         if not path.exists():
             return None
+        if compiled is not None:
+            logger.info(
+                "Recompiling %s because compiler version changed from %s to %s",
+                document_id,
+                compiled.compiler_version,
+                COMPILER_VERSION,
+            )
         _, pages = load_parsed_output(path)
         compiled = compile_document(document_id, pages)
+        self._store.save_compiled_document(compiled)
+        return compiled
+
+    async def _load_or_compile_augmented(
+        self,
+        document_id: str,
+    ) -> CompiledDocument | None:
+        compiled = self._load_or_compile(document_id)
+        if compiled is None:
+            return None
+        compiled = await self._augmenter.augment(compiled)
         self._store.save_compiled_document(compiled)
         return compiled
 
@@ -168,6 +206,11 @@ class FullScanPipeline:
         self._tracker = UsageTracker()
         self._mapper = ExhaustiveMapper(self._router, self._tracker, self._settings)
         self._answerer = V3Answerer(self._router, self._tracker)
+        self._augmenter = StructureAugmenter(
+            self._router,
+            self._tracker,
+            self._settings,
+        )
         started = time.perf_counter()
         run = PipelineRun(
             document_id=document_id,
@@ -180,7 +223,7 @@ class FullScanPipeline:
             notes=self._settings.submission_notes,
         )
         run.submission_path = str(writer.initialize(questions))
-        compiled = self._load_or_compile(document_id)
+        compiled = await self._load_or_compile_augmented(document_id)
         if compiled is None:
             run.warnings.append("No compiled or parsed document found")
             run.completed_at = datetime.now(timezone.utc)
@@ -190,7 +233,7 @@ class FullScanPipeline:
 
         records = all_mapping_records(compiled)
         expected_record_ids = {record.record_id for record in records}
-        plans = compile_questions(questions)
+        plans = compile_questions(questions, compiled)
         deterministic: dict[str, ExecutionResult] = {}
         unresolved: list[V3QuestionPlan] = []
         if progress_callback:
@@ -245,6 +288,7 @@ class FullScanPipeline:
                         plan,
                         question_results,
                         expected_record_ids,
+                        compiled,
                     )
                 answer = self._pipeline_answer(
                     plan,
@@ -284,24 +328,186 @@ class FullScanPipeline:
         plan: V3QuestionPlan,
         question_results: list[V3MapResult],
         expected_record_ids: set[str],
+        compiled: CompiledDocument,
     ) -> tuple[ExecutionResult, list[V3MapResult]]:
-        if plan.strategy == Strategy.ABSENCE_MATRIX:
-            result = reduce_absence(plan, question_results, expected_record_ids)
-            if result is None:
-                result = reduce_absence(
-                    plan,
-                    question_results,
-                    expected_record_ids,
-                    allow_partial=True,
-                )
-        else:
-            packet = build_evidence_packet(plan, question_results, expected_record_ids)
-            result = reduce_mapped_structure(plan, packet)
+        result = self._reduced_result(plan, question_results, expected_record_ids)
 
         if result is not None:
             return result, question_results
         packet = build_evidence_packet(plan, question_results, expected_record_ids)
+        should_repair = self._evidence_needs_repair(plan, packet)
+        if should_repair:
+            selected = self._lexical_repair_records(plan, compiled)
+            repaired = await self._mapper.map_selected_records(
+                compiled,
+                selected,
+                [plan],
+                model_override=self._settings.answer_model,
+            )
+            if repaired:
+                replacement = {
+                    (item.question_id, item.record_id): item for item in repaired
+                }
+                question_results = [
+                    self._merge_map_result(
+                        item,
+                        replacement.get((item.question_id, item.record_id)),
+                    )
+                    for item in question_results
+                ]
+                existing = {
+                    (item.question_id, item.record_id) for item in question_results
+                }
+                question_results.extend(
+                    item
+                    for item in repaired
+                    if (item.question_id, item.record_id) not in existing
+                )
+                result = self._reduced_result(
+                    plan,
+                    question_results,
+                    expected_record_ids,
+                )
+                if result is not None:
+                    return result, question_results
+                packet = build_evidence_packet(
+                    plan,
+                    question_results,
+                    expected_record_ids,
+                )
         return await self._answerer.generate(plan, packet), question_results
+
+    @staticmethod
+    def _evidence_needs_repair(plan: V3QuestionPlan, packet: EvidencePacket) -> bool:
+        if not packet.evidence:
+            return True
+        if plan.category != "global_synthesis":
+            return False
+        record_ids = {item.record_id for item in packet.evidence}
+        expected = max(packet.expected_records, 1)
+        positions = {
+            min(2, int(3 * max(item.record_ordinal - 1, 0) / expected))
+            for item in packet.evidence
+        }
+        return len(record_ids) < 6 or len(positions) < 3
+
+    @staticmethod
+    def _merge_map_result(
+        original: V3MapResult,
+        repaired: V3MapResult | None,
+    ) -> V3MapResult:
+        if repaired is None:
+            return original
+        evidence = list(original.evidence)
+        seen_evidence = {
+            (item.exact_quote.casefold(), item.page, item.role) for item in evidence
+        }
+        for item in repaired.evidence:
+            key = (item.exact_quote.casefold(), item.page, item.role)
+            if key not in seen_evidence:
+                evidence.append(item)
+                seen_evidence.add(key)
+
+        topic_priority = {"none": 0, "uncertain": 1, "mention_only": 2, "substantive": 3}
+        topics = {item.topic.casefold(): item for item in original.topics}
+        for item in repaired.topics:
+            key = item.topic.casefold()
+            previous = topics.get(key)
+            if previous is None or topic_priority.get(item.level, 0) > topic_priority.get(
+                previous.level,
+                0,
+            ):
+                topics[key] = item
+        status = "evidence_found" if evidence else repaired.status
+        return V3MapResult(
+            question_id=original.question_id,
+            record_id=original.record_id,
+            status=status,
+            evidence=evidence,
+            topics=list(topics.values()),
+            error="" if evidence or topics else repaired.error or original.error,
+        )
+
+    @staticmethod
+    def _reduced_result(
+        plan: V3QuestionPlan,
+        question_results: list[V3MapResult],
+        expected_record_ids: set[str],
+    ) -> ExecutionResult | None:
+        if plan.strategy == Strategy.ABSENCE_MATRIX:
+            result = reduce_absence(plan, question_results, expected_record_ids)
+            return result or reduce_absence(
+                plan,
+                question_results,
+                expected_record_ids,
+                allow_partial=True,
+            )
+        packet = build_evidence_packet(plan, question_results, expected_record_ids)
+        return reduce_mapped_structure(plan, packet)
+
+    @staticmethod
+    def _lexical_repair_records(
+        plan: V3QuestionPlan,
+        compiled: CompiledDocument,
+        *,
+        limit: int = 8,
+    ) -> list[CompiledRecord]:
+        records = all_mapping_records(compiled)
+        stop = {
+            "about", "across", "after", "among", "according", "book", "chapter",
+            "does", "each", "from", "give", "guide", "have", "into", "report",
+            "state", "that", "their", "these", "they", "this", "what", "when",
+            "where", "which", "with", "year",
+        }
+
+        def terms(text: str) -> set[str]:
+            return {
+                term
+                for term in re.findall(r"[a-z0-9]+", text.casefold())
+                if len(term) >= 4 and term not in stop
+            }
+
+        question_terms = terms(plan.question)
+
+        def score(record, wanted: set[str]) -> tuple[int, int]:
+            folded = record.text.casefold()
+            matched = sum(term in folded for term in wanted)
+            hint_score = 20 * sum(
+                hint.casefold() in folded for hint in plan.entity_hints
+            )
+            return hint_score + matched, -record.ordinal
+
+        selected: dict[str, CompiledRecord] = {}
+        if plan.strategy == Strategy.ABSENCE_MATRIX:
+            for topic in plan.candidate_topics:
+                wanted = terms(topic)
+                ranked = sorted(records, key=lambda record: score(record, wanted), reverse=True)
+                for record in ranked[:2]:
+                    if score(record, wanted)[0] > 0:
+                        selected[record.record_id] = record
+        if plan.category == "global_synthesis":
+            maximum_ordinal = max((record.ordinal for record in records), default=1)
+            buckets: list[list[CompiledRecord]] = [[], [], []]
+            for record in records:
+                position = min(2, int(3 * max(record.ordinal - 1, 0) / maximum_ordinal))
+                buckets[position].append(record)
+            quotas = [3, 3, 2]
+            for bucket, quota in zip(buckets, quotas, strict=True):
+                ranked_bucket = sorted(
+                    bucket,
+                    key=lambda record: score(record, question_terms),
+                    reverse=True,
+                )
+                for record in ranked_bucket[:quota]:
+                    if score(record, question_terms)[0] > 0:
+                        selected[record.record_id] = record
+        ranked = sorted(records, key=lambda record: score(record, question_terms), reverse=True)
+        for record in ranked:
+            if len(selected) >= limit:
+                break
+            if score(record, question_terms)[0] > 0:
+                selected[record.record_id] = record
+        return list(selected.values())[:limit]
 
     def _pipeline_answer(
         self,
@@ -315,7 +521,10 @@ class FullScanPipeline:
         evidence_note = (
             "Validated source pages/segments: " + ", ".join(map(str, pages)) if pages else ""
         )
-        final_answer = result.answer.strip() or "Error: grounded answer unavailable"
+        final_answer = result.answer.strip() or (
+            "The available document evidence was insufficient to determine a more "
+            "specific answer."
+        )
         return PipelineAnswer(
             question_id=plan.question_id,
             final_answer=final_answer,

@@ -16,6 +16,31 @@ class Strategy(str, enum.Enum):
     HIERARCHICAL_SYNTHESIS = "hierarchical_synthesis"
 
 
+class OperationKind(str, enum.Enum):
+    """Deterministic operations that may be composed for one question."""
+
+    FILTER = "filter"
+    COUNT = "count"
+    LIST = "list"
+    ARGMAX = "argmax"
+    ARGMIN = "argmin"
+    JOIN = "join"
+    DATE_DIFFERENCE = "date_difference"
+    COMPARE = "compare"
+    GROUP_BY = "group_by"
+
+
+class OperationStep(BaseModel):
+    """One validated step in a deterministic question execution plan."""
+
+    kind: OperationKind
+    field: str = ""
+    comparator: str = ""
+    value: Any = None
+    values: list[Any] = Field(default_factory=list)
+    group_by: str = "entity"
+
+
 class NumberFact(BaseModel):
     """A numeric value bound to its source label before any LLM sees it."""
 
@@ -44,16 +69,61 @@ class CompiledRecord(BaseModel):
     number_facts: list[NumberFact] = Field(default_factory=list)
 
 
+class CompiledTableRow(BaseModel):
+    """One normalized table row with its original source location."""
+
+    row_id: str
+    label: str
+    page: int
+    rank: int | None = None
+    group: str = ""
+    values: dict[str, Any] = Field(default_factory=dict)
+    quote: str = ""
+
+
+class CompiledTable(BaseModel):
+    """A consecutive table range reconstructed independently of questions."""
+
+    table_id: str
+    number: int | None = None
+    title: str
+    page_start: int
+    page_end: int
+    columns: list[str] = Field(default_factory=list)
+    rows: list[CompiledTableRow] = Field(default_factory=list)
+    raw_text: str = ""
+    trusted: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ContentsEntry(BaseModel):
+    """One entry from a document contents sub-list."""
+
+    category: str
+    identifier: str
+    title: str = ""
+    page: int | None = None
+
+
 class CompiledDocument(BaseModel):
     """Question-independent representation produced once per upload."""
 
     document_id: str
-    compiler_version: str = "v3.0"
+    compiler_version: str = "v3.2"
     record_kind: str = "segments"
+    entity_label: str = "record"
     records: list[CompiledRecord] = Field(default_factory=list)
     supplementary_records: list[CompiledRecord] = Field(default_factory=list)
+    tables: list[CompiledTable] = Field(default_factory=list)
+    contents_entries: list[ContentsEntry] = Field(default_factory=list)
+    contents_text: str = ""
+    contents_pages: list[int] = Field(default_factory=list)
+    contents_trusted: bool = False
+    field_catalog: list[str] = Field(default_factory=list)
     unassigned_text: str = ""
     page_count: int = 0
+    registry_trusted: bool = False
+    registry_signals: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -71,6 +141,7 @@ class EvidenceCandidate(BaseModel):
     value: Any = None
     unit: str = ""
     confidence: float = 0.0
+    record_ordinal: int = 0
 
 
 class TopicAssessment(BaseModel):
@@ -104,6 +175,9 @@ class V3QuestionPlan(BaseModel):
     strategy: Strategy
     candidate_topics: list[str] = Field(default_factory=list)
     required_slots: list[str] = Field(default_factory=list)
+    operations: list[OperationStep] = Field(default_factory=list)
+    target_fields: list[str] = Field(default_factory=list)
+    entity_hints: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

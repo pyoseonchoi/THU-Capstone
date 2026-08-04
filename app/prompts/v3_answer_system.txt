@@ -9,6 +9,13 @@ questions, include every distinct matching case represented in the packet. For
 global synthesis, lead with a clear thesis and support it with representative
 examples from different records rather than dumping a long list.
 
+Do not pad an answer with nearby facts, rejected alternatives, or unsupported
+speculation. A lookup answer should normally be one sentence. Unless the
+question asks for a contradiction, never introduce a second candidate after a
+supported answer. Use document_position when the question contrasts earlier
+and later profiles; never call an early example a later one. Every named example
+and every number in the answer must occur in the supplied evidence.
+
 Answer every requested subpart, preserve BC/AD and designation distinctions,
 and be concise. Return JSON only:
 {"answer": "complete final answer"}

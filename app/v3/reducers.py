@@ -18,10 +18,85 @@ from app.v3.models import (
 
 TERMINAL_STATUSES = {"evidence_found", "no_evidence"}
 COVERED_STATUSES = {*TERMINAL_STATUSES, "uncertain"}
+_CONCEPT_STOPWORDS = {
+    "across",
+    "all",
+    "book",
+    "different",
+    "does",
+    "each",
+    "entries",
+    "examples",
+    "explain",
+    "guide",
+    "handle",
+    "identify",
+    "overall",
+    "profile",
+    "profiles",
+    "station",
+    "stations",
+    "using",
+    "what",
+    "which",
+}
+_CONCEPT_EXPANSIONS = {
+    "fire": {"fire", "burn", "burning", "wildfire", "post-fire"},
+    "wildlife": {
+        "wildlife",
+        "species",
+        "population",
+        "recovery",
+        "reintroduction",
+        "conservation",
+        "threatened",
+    },
+    "livelihoods": {
+        "livelihood",
+        "families",
+        "community",
+        "communities",
+        "herding",
+        "cutting",
+        "fishers",
+        "traditional",
+        "councils",
+    },
+    "glaciation": {"glacier", "glacial", "ice age", "ice cap", "moraine"},
+    "border": {"border", "cross-border", "transboundary", "paired", "shared"},
+}
 
 
 def _normalized_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _concept_terms(question: str) -> set[str]:
+    folded = question.casefold()
+    terms = {
+        term
+        for term in re.findall(r"[a-z][a-z-]{3,}", folded)
+        if term not in _CONCEPT_STOPWORDS
+    }
+    for trigger, expansions in _CONCEPT_EXPANSIONS.items():
+        if trigger in folded or any(expansion in folded for expansion in expansions):
+            terms.update(expansions)
+    return terms
+
+
+def _is_relevant_synthesis_evidence(
+    plan: V3QuestionPlan,
+    candidate: EvidenceCandidate,
+) -> bool:
+    if plan.strategy != Strategy.HIERARCHICAL_SYNTHESIS:
+        return True
+    terms = _concept_terms(plan.question)
+    if not terms:
+        return True
+    haystack = _normalized_text(
+        " ".join((candidate.claim, candidate.exact_quote, candidate.field, candidate.role))
+    )
+    return any(term in haystack for term in terms)
 
 
 def build_evidence_packet(
@@ -45,8 +120,12 @@ def build_evidence_packet(
 
     evidence: list[EvidenceCandidate] = []
     seen: set[tuple[str, str, str]] = set()
+    dropped_irrelevant = 0
     for result in relevant:
         for item in result.evidence:
+            if not _is_relevant_synthesis_evidence(plan, item):
+                dropped_irrelevant += 1
+                continue
             key = (
                 item.record_id,
                 _normalized_text(item.exact_quote),
@@ -57,6 +136,10 @@ def build_evidence_packet(
             seen.add(key)
             evidence.append(item)
     evidence.sort(key=lambda item: (item.page, item.record_id, item.claim))
+    if dropped_irrelevant:
+        warnings.append(
+            f"Dropped {dropped_irrelevant} off-topic synthesis evidence items"
+        )
 
     topic_summary: dict[str, dict[str, int]] = {}
     for result in relevant:
@@ -119,17 +202,7 @@ def reduce_absence(
         support_counts[topic] = sum(item.level in disqualifying for item in assessments)
     absent = [topic for topic, count in support_counts.items() if count == 0]
     if len(absent) != 1:
-        if not allow_partial or not support_counts:
-            return None
-        ordered = sorted(support_counts.items(), key=lambda item: item[1])
-        unique_low_outlier = (
-            len(ordered) > 1
-            and ordered[0][1] < ordered[1][1]
-            and ordered[1][1] >= max(2, ordered[0][1] + 2)
-        )
-        if not unique_low_outlier:
-            return None
-        absent = [ordered[0][0]]
+        return None
 
     if allow_partial and not complete_coverage:
         present = set(plan.candidate_topics) - set(absent)
@@ -180,8 +253,6 @@ def reduce_absence(
             "Best-effort absence conclusion after targeted repair: "
             f"{len(terminal_records)}/{len(expected_record_ids)} records terminal"
         )
-    if support_counts[missing_topic] > 0:
-        warnings.append("Ignored a unique low-support semantic outlier for the absent topic")
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
