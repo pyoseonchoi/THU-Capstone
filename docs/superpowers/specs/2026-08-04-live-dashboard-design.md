@@ -56,24 +56,35 @@ In `app/api/main.py`:
 1. Add `CORSMiddleware` (allow the `web/` static origin during local dev).
 2. Add a per-job `asyncio.Queue` alongside the existing `_answer_jobs[job_id]`
    dict, created in `create_answer_job` and torn down when the job finishes.
-3. Extend the `progress` closure inside `_execute_answer_job` so that, in
-   addition to updating `_answer_jobs[job_id]`, it also pushes a structured
-   event onto that job's queue: `{ts, stage, step, model, processed, total,
-   failed}`.
+3. Extend the `progress` closure inside `_execute_answer_job` — which
+   already receives `(stage, processed, total, failed)` from the existing
+   `ProgressCallback` — so that, in addition to updating
+   `_answer_jobs[job_id]`, it also pushes `{ts, stage, processed, total,
+   failed}` onto that job's queue. No new data is needed from the callback
+   itself.
 4. New route: `GET /answer-jobs/{job_id}/stream` — a `StreamingResponse`
    that yields `data: {json}\n\n` for each queued event, then a final
    `event: done\ndata: {}\n\n` and closes when the job's status becomes
    `completed` or `failed`.
 
-**Risk flagged for the pipeline pair:** getting the actual model name
-(`ministral-3b-2512` vs `mistral-small-3-2`) into each event may require a
-call site inside `app/pipeline.py` (wherever it calls the mapper vs the
-answerer) to pass that information into `progress_callback`, not just the
-API layer. If `pipeline.py` is under active work by the other pair, this
-needs a quick sync before merging — the API-layer changes (CORS, queue,
-route) do not depend on it and can land independently; the per-event model
-label is a nice-to-have that degrades gracefully to "stage" alone if it
-never arrives.
+**Model badge is derived client-side, not sent by the backend.**
+`ProgressCallback` is `Callable[[str, int, int, int], None]` — a single type
+alias shared verbatim across `app/pipeline.py`, `app/mapping/batch_mapper.py`,
+and `app/v3/exhaustive_mapper.py` (6+ call sites). Widening it to also carry
+a model name would mean editing the mapping-stage files, which directly
+contradicts this spec's own boundary ("no changes to ... mapping ...
+logic") and risks colliding with the pipeline pair's active work.
+
+Instead: models are already assigned statically per stage via config
+(`mapper_model`, `answer_model`, ...; `batch_mapper.repair_failures` even
+uses `model_override=answer_model` for its retries, so stage already implies
+model). `web/app.js` keeps a small static lookup —
+`{compiling: null, mapping: "ministral-3b-2512", repairing: "ministral-3b-2512" /* or answer_model, see below */, answering: "mistral-small-3-2"}`
+— and renders the badge from the incoming `stage` field alone. Zero touches
+to `app/pipeline.py` or the mapping files. (Confirm the `repairing` stage's
+actual model with the pipeline pair before hardcoding it — `repair_failures`
+was observed using `answer_model` for at least some retries — but that's a
+one-line lookup-table fix either way, not an API contract change.)
 
 ## Frontend (`web/`)
 
@@ -146,6 +157,7 @@ framework):
 - Alpine.js (CDN, no build step) as a fallback if hand-rolled state sync in
   `app.js` gets messy — not decided upfront, add only if it's actually
   needed.
-- The "실제로 어떤 모델을 썼는지" badge per log line depends on the
-  `pipeline.py` touch point flagged above; if that doesn't land in time, the
-  log still shows stage + step text without the badge.
+- Confirm which model `repairing` actually uses with the pipeline pair
+  (observed `batch_mapper.repair_failures` passing `model_override=answer_model`
+  for at least some retries) before finalizing the client-side stage→model
+  lookup table.
