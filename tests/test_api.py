@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api import main as api_main
 from app.api.main import app
-from app.schemas import DocumentChunk, DocumentMetadata
+from app.schemas import DocumentChunk, DocumentMetadata, PipelineAnswer, PipelineRun, QuestionRequest
 
 
 @pytest.fixture
@@ -46,6 +48,55 @@ class TestAnswerJobs:
     def test_unknown_job_returns_404(self, client):
         response = client.get("/answer-jobs/does-not-exist")
         assert response.status_code == 404
+
+
+class TestAnswerJobProgressQueue:
+    async def test_progress_events_are_queued_in_order(self, monkeypatch):
+        class FakeJobPipeline:
+            async def answer_questions(self, document_id, questions, mode=None, progress_callback=None):
+                if progress_callback:
+                    progress_callback("mapping", 1, 2, 0)
+                    progress_callback("answering", 2, 2, 0)
+                return PipelineRun(
+                    document_id=document_id,
+                    answers=[PipelineAnswer(question_id="q1", final_answer="answer")],
+                )
+
+            async def close(self):
+                return None
+
+        async def fake_llm_health(settings):
+            return {"available": True, "message": "ok"}
+
+        monkeypatch.setattr(api_main, "_get_pipeline", lambda: FakeJobPipeline())
+        monkeypatch.setattr(api_main, "check_llm_health", fake_llm_health)
+
+        job_id = "job-progress-1"
+        api_main._answer_jobs[job_id] = {
+            "job_id": job_id, "status": "running", "stage": "compiling",
+            "processed": 0, "total": 0, "failed": 0,
+        }
+        api_main._answer_job_queues[job_id] = asyncio.Queue()
+
+        req = api_main.AnswerRequest(
+            document_id="doc-1",
+            questions=[QuestionRequest(question_id="q1", question="test?")],
+        )
+        await api_main._execute_answer_job(job_id, req)
+
+        queue = api_main._answer_job_queues[job_id]
+        events = []
+        while True:
+            item = queue.get_nowait()
+            if item is None:
+                break
+            events.append(item)
+
+        assert events == [
+            {"stage": "mapping", "processed": 1, "total": 2, "failed": 0},
+            {"stage": "answering", "processed": 2, "total": 2, "failed": 0},
+        ]
+        assert api_main._answer_jobs[job_id]["status"] == "completed"
 
 
 class TestDocumentUpload:

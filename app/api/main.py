@@ -203,10 +203,12 @@ async def answer_questions(req: AnswerRequest):
 
 
 _answer_jobs: dict[str, dict] = {}
+_answer_job_queues: dict[str, asyncio.Queue] = {}
 
 
 async def _execute_answer_job(job_id: str, req: AnswerRequest) -> None:
     pipeline: FullScanPipeline | None = None
+    queue = _answer_job_queues.get(job_id)
     try:
         mode = PipelineMode(req.pipeline_mode)
         llm_status = await check_llm_health(get_settings())
@@ -215,12 +217,15 @@ async def _execute_answer_job(job_id: str, req: AnswerRequest) -> None:
         pipeline = _get_pipeline()
 
         def progress(stage: str, processed: int, total: int, failed: int) -> None:
-            _answer_jobs[job_id].update({
+            event = {
                 "stage": stage,
                 "processed": processed,
                 "total": total,
                 "failed": failed,
-            })
+            }
+            _answer_jobs[job_id].update(event)
+            if queue is not None:
+                queue.put_nowait(event)
 
         run = await pipeline.answer_questions(
             req.document_id,
@@ -243,6 +248,8 @@ async def _execute_answer_job(job_id: str, req: AnswerRequest) -> None:
     finally:
         if pipeline is not None:
             await pipeline.close()
+        if queue is not None:
+            queue.put_nowait(None)
 
 
 @app.post("/answer-jobs", status_code=202)
@@ -262,6 +269,7 @@ async def create_answer_job(req: AnswerRequest):
         "total": 0,
         "failed": 0,
     }
+    _answer_job_queues[job_id] = asyncio.Queue()
     asyncio.create_task(_execute_answer_job(job_id, req))
     return _answer_jobs[job_id]
 
