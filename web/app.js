@@ -315,30 +315,28 @@ function downloadSubmission() {
 }
 
 // ---------- usage polling ----------
-// NOTE: app/llm/broker.py passes the course broker's /usage response through
-// verbatim, and its exact field names/shape aren't documented anywhere we
-// have access to. Rather than guess one specific key, sumCostFields() walks
-// the whole response and adds up every numeric value under a key whose name
-// contains "cost" (case-insensitive), at any nesting depth -- this adapts to
-// a flat {"total_cost": ...}, a per-model breakdown, or anything shaped like
-// it, without needing the exact schema up front.
-
-function sumCostFields(value) {
-  if (typeof value === "number") return 0; // handled by the caller via key name
-  if (Array.isArray(value)) return value.reduce((sum, v) => sum + sumCostFields(v), 0);
-  if (value && typeof value === "object") {
-    return Object.entries(value).reduce((sum, [key, v]) => {
-      if (typeof v === "number" && /cost/i.test(key)) return sum + v;
-      return sum + sumCostFields(v);
-    }, 0);
-  }
-  return 0;
-}
+// Confirmed live against the real broker (2026-08-04):
+//   {"group": "...", "models": {"ministral-3b-2512": {"requests":.., "input_tokens":..,
+//   "output_tokens":.., "cost":..}, "mistral-small-3-2": {...}}, "total": {..., "cost":..},
+//   "legacy": {}}
+// "total.cost" is the group's cumulative spend and already includes both models' cost --
+// use it directly rather than summing per-model costs (which would double-count).
 
 function formatUsageCost(usage) {
-  const total = sumCostFields(usage);
-  if (total > 0) return `$${total.toFixed(2)}`;
-  if (total === 0 && JSON.stringify(usage).length > 2) return "$0.00";
+  if (usage.total && typeof usage.total.cost === "number") {
+    return `$${usage.total.cost.toFixed(2)}`;
+  }
+  // Fallbacks in case the broker's response shape ever changes.
+  if (typeof usage.total_cost === "number") return `$${usage.total_cost.toFixed(2)}`;
+  if (typeof usage.cost === "number") return `$${usage.cost.toFixed(2)}`;
+  const perModel = usage.models || usage.by_model;
+  if (perModel && typeof perModel === "object") {
+    const sum = Object.values(perModel).reduce(
+      (s, m) => s + (m && typeof m.cost === "number" ? m.cost : 0),
+      0
+    );
+    if (sum > 0) return `$${sum.toFixed(2)}`;
+  }
   return "n/a";
 }
 
