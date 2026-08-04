@@ -323,6 +323,48 @@ async function pollUsage() {
   }
 }
 
+// ---------- pipeline parameters (read-only) ----------
+
+const SETTINGS_LABELS = {
+  mapper_model: "매핑 모델 (3B)",
+  answer_model: "답변/보정 모델 (24B)",
+  verifier_model: "검증 모델",
+  planner_model: "플래너 모델",
+  chunk_target_tokens: "청크 목표 토큰",
+  chunk_overlap_tokens: "청크 오버랩 토큰",
+  question_batch_size: "질문 배치 크기",
+  record_batch_size: "레코드 배치 크기",
+  max_concurrent_requests: "최대 동시 요청",
+  request_timeout_seconds: "요청 타임아웃(초)",
+  max_retries: "최대 재시도",
+  pipeline_mode: "파이프라인 모드",
+  llm_temperature: "temperature",
+  llm_top_p: "top_p",
+  llm_seed: "seed",
+  team_name: "팀 이름",
+};
+
+async function loadPipelineSettings() {
+  try {
+    const res = await fetch(`${API_BASE}/pipeline-settings`);
+    if (!res.ok) return;
+    const settings = await res.json();
+    const grid = el("settings-grid");
+    grid.innerHTML = "";
+    Object.entries(settings).forEach(([key, value]) => {
+      const card = document.createElement("div");
+      card.className = "stat-card";
+      card.innerHTML = `
+        <div class="l">${SETTINGS_LABELS[key] || key}</div>
+        <div class="n" style="font-size:15px;">${value}</div>
+      `;
+      grid.appendChild(card);
+    });
+  } catch {
+    // best-effort display only
+  }
+}
+
 // ---------- wiring ----------
 
 function initHandlers() {
@@ -367,4 +409,5 @@ document.addEventListener("DOMContentLoaded", () => {
   initHandlers();
   pollUsage();
   setInterval(pollUsage, 5000);
+  loadPipelineSettings();
 });
