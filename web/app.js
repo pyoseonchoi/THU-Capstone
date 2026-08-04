@@ -316,14 +316,30 @@ function downloadSubmission() {
 
 // ---------- usage polling ----------
 // NOTE: app/llm/broker.py passes the course broker's /usage response through
-// verbatim -- its exact field names aren't confirmed by this plan. Run
-// `curl http://127.0.0.1:8000/usage` once the .env broker key is configured
-// and adjust formatUsageCost's field lookups below to match.
+// verbatim, and its exact field names/shape aren't documented anywhere we
+// have access to. Rather than guess one specific key, sumCostFields() walks
+// the whole response and adds up every numeric value under a key whose name
+// contains "cost" (case-insensitive), at any nesting depth -- this adapts to
+// a flat {"total_cost": ...}, a per-model breakdown, or anything shaped like
+// it, without needing the exact schema up front.
+
+function sumCostFields(value) {
+  if (typeof value === "number") return 0; // handled by the caller via key name
+  if (Array.isArray(value)) return value.reduce((sum, v) => sum + sumCostFields(v), 0);
+  if (value && typeof value === "object") {
+    return Object.entries(value).reduce((sum, [key, v]) => {
+      if (typeof v === "number" && /cost/i.test(key)) return sum + v;
+      return sum + sumCostFields(v);
+    }, 0);
+  }
+  return 0;
+}
 
 function formatUsageCost(usage) {
-  const cost = usage.total_cost ?? usage.cost ?? usage.total_cost_usd;
-  if (typeof cost === "number") return `$${cost.toFixed(2)}`;
-  return "check field name"; // placeholder until the real field name is confirmed
+  const total = sumCostFields(usage);
+  if (total > 0) return `$${total.toFixed(2)}`;
+  if (total === 0 && JSON.stringify(usage).length > 2) return "$0.00";
+  return "n/a";
 }
 
 async function pollUsage() {
