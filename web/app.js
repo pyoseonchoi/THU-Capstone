@@ -243,6 +243,86 @@ function updateDonut() {
   el("donut-24b-pct").textContent = `${pct24b}%`;
 }
 
+// ---------- result rendering ----------
+
+function renderResult(result) {
+  state.submission = result.submission;
+  el("download-submission-btn").disabled = false;
+
+  if (result.usage) {
+    const total = (result.usage.total_input_tokens || 0) + (result.usage.total_output_tokens || 0);
+    el("stat-tokens").textContent = total.toLocaleString("en-US");
+  }
+
+  const tbody = el("history-body");
+  if (tbody.dataset.seeded !== "true") {
+    tbody.innerHTML = "";
+    tbody.dataset.seeded = "true";
+  }
+
+  let lastAnswer = null;
+  result.answers.forEach((answer) => {
+    const question = state.questions.find((q) => q.question_id === answer.question_id);
+    const failed = Boolean(answer.warnings && answer.warnings.length > 0);
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td class="qid mono">${answer.question_id}</td>
+      <td class="qtext">${question ? question.question : ""}</td>
+      <td><span class="chip chip-cat">${question && question.category ? question.category : "미분류"}</span></td>
+      <td><span class="status-pill ${failed ? "" : "ok"}">${failed ? "실패" : "완료"}</span></td>
+    `;
+    tbody.appendChild(row);
+    lastAnswer = { answer, question };
+  });
+
+  if (lastAnswer) renderAnswerCard(lastAnswer.answer, lastAnswer.question);
+}
+
+function renderAnswerCard(answer, question) {
+  el("answer-block").style.display = "block";
+  el("answer-text").textContent = answer.final_answer;
+  const failed = Boolean(answer.warnings && answer.warnings.length > 0);
+  el("answer-meta").innerHTML = `
+    <span class="chip chip-cat">${question && question.category ? question.category : "미분류"}</span>
+    ${failed ? `<span class="chip chip-err">${answer.warnings[0]}</span>` : `<span class="chip chip-ok">완료</span>`}
+  `;
+}
+
+function downloadSubmission() {
+  if (!state.submission) return;
+  const blob = new Blob([JSON.stringify(state.submission, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "submission.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ---------- usage polling ----------
+// NOTE: app/llm/broker.py passes the course broker's /usage response through
+// verbatim -- its exact field names aren't confirmed by this plan. Run
+// `curl http://127.0.0.1:8000/usage` once the .env broker key is configured
+// (Task 7's manual verification step) and adjust formatUsageCost's field
+// lookups below to match.
+
+function formatUsageCost(usage) {
+  const cost = usage.total_cost ?? usage.cost ?? usage.total_cost_usd;
+  if (typeof cost === "number") return `$${cost.toFixed(2)}`;
+  return "확인 필요"; // placeholder until the real field name is confirmed
+}
+
+async function pollUsage() {
+  try {
+    const res = await fetch(`${API_BASE}/usage`);
+    if (!res.ok) return;
+    const usage = await res.json();
+    el("stat-cost").textContent = formatUsageCost(usage);
+  } catch {
+    // usage is best-effort; ignore transient failures
+  }
+}
+
 // ---------- wiring ----------
 
 function initHandlers() {
@@ -279,6 +359,12 @@ function initHandlers() {
       applyLogFilter();
     });
   });
+
+  el("download-submission-btn").addEventListener("click", downloadSubmission);
 }
 
-document.addEventListener("DOMContentLoaded", initHandlers);
+document.addEventListener("DOMContentLoaded", () => {
+  initHandlers();
+  pollUsage();
+  setInterval(pollUsage, 5000);
+});
