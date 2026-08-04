@@ -51,20 +51,33 @@
     <div class="card" style="margin-bottom:14px;">
       <div class="card-head"><h2>Document &amp; Question Set</h2><span class="sub">Upload</span></div>
 
-      <div class="dropzone" id="doc-dropzone">
-        <div class="icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11M12 15l7-4M12 15l-7-4M5 11V7l7-4 7 4v4"/></svg>
+      <div class="upload-grid">
+        <div class="upload-slot">
+          <div class="upload-slot-label">1 · Document</div>
+          <div class="dropzone" id="doc-dropzone">
+            <div class="icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11M12 15l7-4M12 15l-7-4M5 11V7l7-4 7 4v4"/></svg>
+            </div>
+            <div class="t">Drag a document here, or click to upload</div>
+            <div class="d">.txt · .pdf — up to 32MB</div>
+            <label class="browse" for="doc-input">Choose document</label>
+            <input type="file" id="doc-input" accept=".txt,.pdf" hidden>
+          </div>
         </div>
-        <div class="t">Drag a document here, or click to upload</div>
-        <div class="d">.txt · .pdf — up to 32MB</div>
-        <label class="browse" for="doc-input">Choose document</label>
-        <input type="file" id="doc-input" accept=".txt,.pdf" hidden>
-      </div>
 
-      <div class="row">
-        <label class="browse" for="questions-input">Choose question set (JSON or YAML)</label>
-        <input type="file" id="questions-input" accept=".json,.yaml,.yml" hidden>
-        <span class="sub" id="questions-count-label">not uploaded yet</span>
+        <div class="upload-slot">
+          <div class="upload-slot-label">2 · Question set</div>
+          <div class="dropzone" id="questions-dropzone">
+            <div class="icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 17H7a5 5 0 01-1-9.9A6 6 0 0117 6a4.5 4.5 0 011 8.9M12 11v9M9 17l3-3 3 3"/></svg>
+            </div>
+            <div class="t">Drag a question file here, or click to upload</div>
+            <div class="d">.json · .yaml · .yml</div>
+            <label class="browse" for="questions-input">Choose question set</label>
+            <input type="file" id="questions-input" accept=".json,.yaml,.yml" hidden>
+          </div>
+          <div class="sub" id="questions-count-label" style="margin-top:8px;display:block;">not uploaded yet</div>
+        </div>
       </div>
 
       <div class="filelist" id="file-list"></div>

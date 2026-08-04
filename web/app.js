@@ -408,6 +408,11 @@ function initHandlers() {
   el("questions-input").addEventListener("change", (e) => {
     if (e.target.files[0]) loadQuestions(e.target.files[0]);
   });
+  el("questions-dropzone").addEventListener("dragover", (e) => e.preventDefault());
+  el("questions-dropzone").addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) loadQuestions(e.dataTransfer.files[0]);
+  });
 
   el("question-picker").addEventListener("change", updatePickedCategory);
 

@@ -109,6 +109,10 @@ main{flex:1;min-width:0;padding:26px 32px 56px;}
 .ask-hero .answer .t{font-size:16px;line-height:1.7;}
 .ask-hero .answer{max-width:760px;margin-left:auto;margin-right:auto;}
 
+.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media (max-width:640px){.upload-grid{grid-template-columns:1fr;}}
+.upload-slot-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);margin-bottom:8px;}
+
 .dropzone{border:1.5px dashed var(--line);border-radius:14px;background:var(--card-2);padding:22px;text-align:center;}
 .dropzone .icon{width:38px;height:38px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;margin:0 auto 10px;}
 .dropzone .icon svg{width:18px;height:18px;}
