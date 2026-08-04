@@ -25,6 +25,12 @@ class TestHealthEndpoint:
         assert "version" in data
 
 
+class TestCORS:
+    def test_cors_allows_cross_origin_requests(self, client):
+        response = client.get("/health", headers={"Origin": "http://127.0.0.1:5500"})
+        assert response.headers.get("access-control-allow-origin") == "*"
+
+
 class TestAnswerJobs:
     def test_invalid_pipeline_mode_is_rejected(self, client):
         response = client.post(
