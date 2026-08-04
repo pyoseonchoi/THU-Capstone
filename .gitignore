@@ -39,3 +39,6 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 web/fixtures_dev_questions.json
+
+# Local-only evaluation docs
+docs/evaluation/
