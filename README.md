@@ -14,12 +14,12 @@ V3 has one production path: `ADAPTIVE_HIERARCHICAL_V3`.
 PDF/TXT
   -> page-preserving parser
   -> question-independent Document Compiler
-       -> closed repeated-record catalog when structure is detected
-       -> deterministic number/label binding for numeric cards
+       -> generic repeated-entity registry with integrity checks
+       -> deterministic number/label binding for mixed fact-card layouts
        -> consecutive fallback segments for arbitrary Markdown
        -> supplementary front/back-matter records
-  -> deterministic question compiler
-  -> Python structured executor when typed facts are sufficient
+  -> deterministic question compiler with composable operation plans
+  -> Python structured executor for FILTER, COUNT, LIST, ARGMAX, JOIN, and date math
   -> exhaustive batched mapper over every record for unresolved questions
   -> category-specific reducer
        -> absence coverage matrix
@@ -48,6 +48,9 @@ no general verifier that can rewrite a count, maximum, or absence verdict.
 ## Reliability Properties
 
 - Every page belongs to a catalog, segment, or supplementary mapping record.
+- Repeated-entity registries are trusted only when fact-section, title, and
+  contents counts agree; otherwise the exhaustive fallback remains available.
+- Stored documents are automatically recompiled when the compiler contract changes.
 - Every unresolved question/record pair receives `evidence_found`,
   `no_evidence`, `uncertain`, `parse_failed`, or `llm_failed`.
 - Positive evidence must contain a source-literal quote.
@@ -94,6 +97,7 @@ REQUEST_TIMEOUT_SECONDS=300
 MAX_RETRIES=1
 QUESTION_BATCH_SIZE=8
 RECORD_BATCH_SIZE=3
+RECORD_BATCH_MAX_CHARACTERS=18000
 PIPELINE_MODE=ADAPTIVE_HIERARCHICAL
 TEAM_NAME=C
 ```
@@ -184,6 +188,8 @@ python -m compileall -q app ui scripts
 V3 regression tests cover:
 
 - numeric value/label binding, million scaling, and BC dates;
+- generic repeated-entity detection, registry integrity, and fictional countries;
+- composed FILTER -> ARGMAX and JOIN -> date-difference execution;
 - complete generic-page segmentation;
 - exhaustive mapper pair coverage and exact-quote validation;
 - ellipsis-to-source quote restoration;
@@ -201,8 +207,8 @@ data/runs/<run-id>/*.json      plans, map results, diagnostics
 data/runs/<run-id>.json        completed PipelineRun
 ```
 
-The practice document compiles into 60 park records plus 3 supplementary
-front/index records. Its structured questions are resolved from the closed
-catalog without LLM arithmetic. The remaining questions require two exhaustive
-mapper passes in the default batching layout, followed by at most seven final
-answer calls unless a bounded repair pass is triggered.
+The practice document compiles into 60 park records plus supplementary
+front/index records. Other repeated-profile documents use the same registry
+compiler without requiring park-specific headings or real-world country names.
+Structured questions are resolved from the trusted catalog without LLM
+arithmetic; unresolved questions still scan every compiled record.

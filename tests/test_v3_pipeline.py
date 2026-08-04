@@ -10,6 +10,7 @@ from app.config import Settings
 from app.llm.base import BaseLLMClient, LLMResponse
 from app.pipeline import FullScanPipeline
 from app.schemas import QuestionRequest, UsageRecord
+from app.v3.compiler import COMPILER_VERSION
 
 
 class PipelineFakeClient(BaseLLMClient):
@@ -120,4 +121,30 @@ async def test_structured_question_uses_no_llm_calls(tmp_path):
     assert "Beta National Park" in run.answers[0].final_answer
     assert "300" in run.answers[0].final_answer
     assert fake.stages == []
+    await pipeline.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_compiled_document_is_rebuilt_from_parsed_pages(tmp_path):
+    source = tmp_path / "document.txt"
+    source.write_text("A small document.", encoding="utf-8")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        mistral_api_key="fake",
+        evaluation_mode=False,
+    )
+    pipeline = FullScanPipeline(settings, llm_client=PipelineFakeClient())
+    metadata, _ = await pipeline.process_document(source)
+    stale = pipeline._store.load_compiled_document(metadata.document_id)
+    assert stale is not None
+    stale.compiler_version = "v3.0"
+    pipeline._store.save_compiled_document(stale)
+
+    rebuilt = pipeline._load_or_compile(metadata.document_id)
+
+    assert rebuilt is not None
+    assert rebuilt.compiler_version == COMPILER_VERSION
+    assert pipeline._store.load_compiled_document(
+        metadata.document_id
+    ).compiler_version == COMPILER_VERSION
     await pipeline.close()

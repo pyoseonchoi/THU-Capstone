@@ -33,8 +33,54 @@ def _parse_answer(raw: str) -> str:
     return str(data.get("answer", data.get("final_answer", ""))).strip()
 
 
-def _evidence_payload(packet: EvidencePacket) -> list[dict]:
-    """Represent every reduced item within a bounded per-item envelope."""
+def _evidence_score(item) -> tuple[int, float]:
+    text = f"{item.claim} {item.exact_quote}".casefold()
+    signals = (
+        "increased",
+        "declined",
+        "recovered",
+        "bounced back",
+        "reintroduced",
+        "fell to",
+        "rose to",
+        "from ",
+        "but ",
+        "since ",
+    )
+    return sum(signal in text for signal in signals), item.confidence
+
+
+def _bounded_evidence(plan: V3QuestionPlan, packet: EvidencePacket):
+    items = list(packet.evidence)
+    if plan.strategy.value != "hierarchical_synthesis":
+        return items
+    limit = 80 if plan.category == "cross_section" else 36
+    if len(items) <= limit:
+        return items
+    if plan.category == "cross_section":
+        return sorted(items, key=_evidence_score, reverse=True)[:limit]
+
+    expected = max(packet.expected_records, 1)
+    buckets: list[list] = [[], [], []]
+    for item in items:
+        ratio = max(item.record_ordinal - 1, 0) / expected
+        bucket = 0 if ratio < 1 / 3 else (1 if ratio < 2 / 3 else 2)
+        buckets[bucket].append(item)
+    per_bucket = max(1, limit // 3)
+    selected = [
+        item
+        for bucket in buckets
+        for item in sorted(bucket, key=_evidence_score, reverse=True)[:per_bucket]
+    ]
+    return sorted(selected[:limit], key=lambda item: (item.record_ordinal, item.page))
+
+
+def _evidence_payload(
+    plan: V3QuestionPlan,
+    packet: EvidencePacket,
+) -> list[dict]:
+    """Represent reduced evidence within a bounded synthesis envelope."""
+    expected = max(packet.expected_records, 1)
     return [
         {
             "evidence_id": f"E{index:03d}",
@@ -45,10 +91,16 @@ def _evidence_payload(packet: EvidencePacket) -> list[dict]:
             "value": item.value,
             "unit": item.unit,
             "role": item.role,
+            "record_ordinal": item.record_ordinal,
+            "document_position": (
+                "early"
+                if item.record_ordinal <= expected / 3
+                else ("middle" if item.record_ordinal <= 2 * expected / 3 else "late")
+            ),
             "claim": item.claim[:600],
             "exact_quote": item.exact_quote[:900],
         }
-        for index, item in enumerate(packet.evidence, start=1)
+        for index, item in enumerate(_bounded_evidence(plan, packet), start=1)
     ]
 
 
@@ -105,7 +157,7 @@ class V3Answerer:
                 complete=False,
                 warnings=[*packet.warnings, "No complete grounded evidence packet"],
             )
-        evidence = _evidence_payload(packet)
+        evidence = _evidence_payload(plan, packet)
         warnings = list(packet.warnings)
         used_fallback = False
         try:
@@ -172,7 +224,11 @@ class V3Answerer:
             ],
             stage="answer",
             temperature=0.0,
-            max_tokens=2500,
+            max_tokens=(
+                300
+                if plan.strategy.value == "exhaustive_lookup"
+                else (700 if plan.strategy.value == "claim_compare" else 1400)
+            ),
             json_mode=True,
             question_ids=[plan.question_id],
         )

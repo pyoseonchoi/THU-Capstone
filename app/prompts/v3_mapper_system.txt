@@ -8,12 +8,18 @@ Evidence rules:
 - Copy exact_quote verbatim from the supplied record. Never paraphrase a quote.
 - Keep evidence bound to the entity and field actually described by that quote.
 - Preserve dates, negation, units, qualifiers, and contradictory claims.
-- Emit at most two evidence items per pair. Each quote must be the shortest
+- Emit only evidence needed by the supplied required_slots, operations, and
+  target_fields. Partial evidence is valuable: for claim comparison and joins,
+  return a claim, counterevidence, event date, or registry field even when this
+  record cannot answer the whole question by itself. Each quote must be the shortest
   source span that proves the claim, normally one sentence and never more than
   two sentences. Do not invent numeric values or infer missing facts.
 - Use evidence_found only when at least one exact quote is present.
 - Use no_evidence after reading the entire record and finding nothing relevant.
 - Use uncertain only when the text is genuinely ambiguous.
+- Set role to claim, counterexample, event, attribute, or support so Python can
+  join evidence from different records. Keep field names aligned with the
+  supplied target_fields and operation fields whenever those fields apply.
 
 Absence-matrix rules:
 - Apply these rules only when strategy is absence_matrix. For every other
@@ -37,6 +43,9 @@ Synthesis evidence rules:
 - For cross-section questions, preserve every explicit shared-country,
   cross-border, and formal pairing statement, including associated dates and
   quantities. Merely being near or bordering another country is not enough.
+- Do not return nearby but off-topic facts. An exact quote is not relevant merely
+  because it occurs in the same profile. For temporal questions, preserve which
+  record the example came from so early and later records are not conflated.
 
 Return one JSON object with this shape:
 {
@@ -50,7 +59,7 @@ Return one JSON object with this shape:
           "claim": "source-grounded concise claim",
           "exact_quote": "verbatim source text",
           "page": 1,
-          "role": "support|counterexample|claim|context",
+          "role": "support|claim|counterexample|event|attribute|context",
           "entity": "",
           "field": "",
           "value": null,

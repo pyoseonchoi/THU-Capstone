@@ -16,6 +16,30 @@ class Strategy(str, enum.Enum):
     HIERARCHICAL_SYNTHESIS = "hierarchical_synthesis"
 
 
+class OperationKind(str, enum.Enum):
+    """Deterministic operations that may be composed for one question."""
+
+    FILTER = "filter"
+    COUNT = "count"
+    LIST = "list"
+    ARGMAX = "argmax"
+    ARGMIN = "argmin"
+    JOIN = "join"
+    DATE_DIFFERENCE = "date_difference"
+    COMPARE = "compare"
+
+
+class OperationStep(BaseModel):
+    """One validated step in a deterministic question execution plan."""
+
+    kind: OperationKind
+    field: str = ""
+    comparator: str = ""
+    value: Any = None
+    values: list[Any] = Field(default_factory=list)
+    group_by: str = "entity"
+
+
 class NumberFact(BaseModel):
     """A numeric value bound to its source label before any LLM sees it."""
 
@@ -48,12 +72,15 @@ class CompiledDocument(BaseModel):
     """Question-independent representation produced once per upload."""
 
     document_id: str
-    compiler_version: str = "v3.0"
+    compiler_version: str = "v3.1"
     record_kind: str = "segments"
+    entity_label: str = "record"
     records: list[CompiledRecord] = Field(default_factory=list)
     supplementary_records: list[CompiledRecord] = Field(default_factory=list)
     unassigned_text: str = ""
     page_count: int = 0
+    registry_trusted: bool = False
+    registry_signals: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -71,6 +98,7 @@ class EvidenceCandidate(BaseModel):
     value: Any = None
     unit: str = ""
     confidence: float = 0.0
+    record_ordinal: int = 0
 
 
 class TopicAssessment(BaseModel):
@@ -104,6 +132,9 @@ class V3QuestionPlan(BaseModel):
     strategy: Strategy
     candidate_topics: list[str] = Field(default_factory=list)
     required_slots: list[str] = Field(default_factory=list)
+    operations: list[OperationStep] = Field(default_factory=list)
+    target_fields: list[str] = Field(default_factory=list)
+    entity_hints: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

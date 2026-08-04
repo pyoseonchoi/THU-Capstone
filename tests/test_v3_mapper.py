@@ -11,9 +11,39 @@ from app.llm.base import BaseLLMClient, LLMResponse
 from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.schemas import QuestionRequest, UsageRecord
-from app.v3.exhaustive_mapper import ExhaustiveMapper, _canonical_quote
+from app.v3.exhaustive_mapper import ExhaustiveMapper, _canonical_quote, _pack_records
 from app.v3.models import CompiledDocument, CompiledRecord
 from app.v3.question_compiler import compile_question
+
+
+def test_record_packing_preserves_all_records_and_bounds_normal_batches():
+    records = [
+        CompiledRecord(
+            record_id=f"r{index}",
+            ordinal=index,
+            title=f"Record {index}",
+            page_start=index,
+            page_end=index,
+            anchor_page=index,
+            text="x" * size,
+        )
+        for index, size in enumerate((3000, 3000, 7000, 20_000), start=1)
+    ]
+
+    batches = _pack_records(records, max_items=3, max_characters=8000)
+
+    assert [record.record_id for batch in batches for record in batch] == [
+        "r1",
+        "r2",
+        "r3",
+        "r4",
+    ]
+    assert [len(batch) for batch in batches] == [2, 1, 1]
+    assert all(
+        sum(len(record.text) for record in batch) <= 8000
+        for batch in batches
+        if len(batch) > 1 or len(batch[0].text) <= 8000
+    )
 
 
 class MapperFakeClient(BaseLLMClient):

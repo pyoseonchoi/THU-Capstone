@@ -3,7 +3,7 @@
 ## Project Goals
 FULLSCAN-QA is an operator-aware exhaustive large-document QA system.
 It answers complex questions (aggregation, superlative, absence, counts)
-by processing EVERY document chunk — not by retrieving top-k.
+by processing EVERY document record — not by retrieving top-k.
 
 ## Hard Rules
 
@@ -68,16 +68,18 @@ ruff format app/ tests/
 - Any heavy distributed computing framework
 
 ## File Organization
-- `app/` — Core application code
 - `app/api/` — FastAPI endpoints
-- `app/llm/` — LLM client abstraction
-- `app/parsing/` — PDF parsing
-- `app/chunking/` — Document chunking
-- `app/planning/` — Question planning
-- `app/mapping/` — Evidence extraction
-- `app/reduction/` — Normalization, dedup, deterministic ops
-- `app/verification/` — Claim and coverage verification
-- `app/answering/` — Answer generation
-- `tests/` — All tests with fixtures
+- `app/llm/` — LLM client abstraction and model routing
+- `app/parsing/` — page-preserving PDF/TXT parsing
+- `app/reduction/` — shared normalization and deterministic operators
+- `app/storage/` — compiled-document and run artifact persistence
+- `app/v3/compiler.py` — generic repeated-entity document compiler
+- `app/v3/question_compiler.py` — composable question operation plans
+- `app/v3/structured_executor.py` — deterministic Python execution
+- `app/v3/exhaustive_mapper.py` — exhaustive evidence extraction
+- `app/v3/reducers.py` — coverage and evidence reduction
+- `app/v3/answerer.py` — concise evidence-grounded synthesis
+- `app/pipeline.py` — sole production pipeline orchestration
+- `tests/` — regression and integration tests
 - `scripts/` — CLI tools
 - `ui/` — Streamlit demo

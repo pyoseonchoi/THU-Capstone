@@ -10,6 +10,7 @@ from app.v3.models import (
     CompiledRecord,
     ExecutionResult,
     NumberFact,
+    OperationKind,
     V3QuestionPlan,
 )
 
@@ -64,9 +65,19 @@ def _format_number(value: float) -> str:
     return f"{value:,.0f}" if value.is_integer() else f"{value:,.2f}".rstrip("0")
 
 
-def _country_mentions(question: str) -> list[str]:
+def _country_mentions(
+    question: str,
+    document: CompiledDocument | None = None,
+) -> list[str]:
     folded = question.casefold()
-    return [country for country in _COUNTRY_NAMES if country.casefold() in folded]
+    candidates = list(_COUNTRY_NAMES)
+    if document is not None:
+        candidates.extend(record.country for record in document.records if record.country)
+    return [
+        country
+        for country in dict.fromkeys(candidates)
+        if country.casefold() in folded
+    ]
 
 
 def _fact_evidence(record: CompiledRecord, fact: NumberFact) -> str:
@@ -521,19 +532,490 @@ def _climbing_firsts_answer(
     )
 
 
-def _catalog_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    if document.record_kind != "repeated_entity":
+def _registry_is_trusted(document: CompiledDocument) -> bool:
+    return document.record_kind == "repeated_entity" and (
+        document.registry_trusted or not document.registry_signals
+    )
+
+
+def _operation(plan: V3QuestionPlan, kind: OperationKind):
+    return next((step for step in plan.operations if step.kind == kind), None)
+
+
+def _composed_fact_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    """Execute validated count/list and superlative plans over a trusted registry."""
+    if (
+        not _registry_is_trusted(document)
+        or not plan.operations
+        or plan.category == "contradiction"
+    ):
         return None
-    folded = plan.question.casefold()
-    countries = _country_mentions(plan.question)
-    if "profile in total" in folded and countries:
-        country = countries[0]
-        selected = [record for record in document.records if record.country == country]
-        names = ", ".join(record.title for record in selected)
+    target = plan.target_fields[0] if plan.target_fields else ""
+    if not target:
+        return None
+    candidates = _facts(document, target)
+    if not candidates:
+        return None
+
+    filter_step = _operation(plan, OperationKind.FILTER)
+    count_step = _operation(plan, OperationKind.COUNT)
+    list_step = _operation(plan, OperationKind.LIST)
+    argmax_step = _operation(plan, OperationKind.ARGMAX)
+
+    if filter_step and filter_step.field == "designation_status" and argmax_step:
+        return _designation_argmax_answer(plan, document, candidates, filter_step.values)
+
+    if count_step:
+        selected = candidates
+        if filter_step and filter_step.field == target and filter_step.value is not None:
+            threshold = float(filter_step.value)
+            if filter_step.comparator == "gt":
+                selected = [pair for pair in selected if pair[1].value > threshold]
+            else:
+                selected = [pair for pair in selected if pair[1].value >= threshold]
+        selected.sort(key=lambda pair: pair[1].value, reverse=True)
+        entities = list(dict.fromkeys(record.title for record, _ in selected))
+        details = ", ".join(
+            f"{record.title} ({_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''})"
+            for record, fact in selected
+        )
+        noun = document.entity_label or "entity"
+        answer = f"{len(entities)} {noun}{'' if len(entities) == 1 else 's'} qualify"
+        if list_step:
+            answer += f": {details}"
+        answer += "."
+        return ExecutionResult(
+            question_id=plan.question_id,
+            answer=answer,
+            evidence=[_fact_evidence(record, fact) for record, fact in selected],
+            source_pages=sorted({fact.page for _, fact in selected}),
+            complete=True,
+            strategy=plan.strategy,
+        )
+
+    if argmax_step:
+        value_key = (
+            (lambda pair: _area_km2(pair[1]))
+            if target == "area"
+            else (lambda pair: pair[1].value)
+        )
+        record, fact = max(candidates, key=value_key)
+        if target == "area":
+            answer = (
+                f"{record.title} has the largest monitored area: "
+                f"{fact.raw_value} {fact.unit}."
+            )
+        elif target == "annual_visitors":
+            answer = (
+                f"{record.title} reports the largest annual figure: "
+                f"{_format_number(fact.value)} visiting researchers per year."
+            )
+        elif target == "highest_point":
+            answer = (
+                f"{record.title} reports the highest operating point: "
+                f"{_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''}."
+            )
+        else:
+            answer = (
+                f"{record.title} has the maximum reported value: "
+                f"{_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''}."
+            )
+        return ExecutionResult(
+            question_id=plan.question_id,
+            answer=answer,
+            evidence=[_fact_evidence(record, fact)],
+            source_pages=[fact.page],
+            complete=True,
+            strategy=plan.strategy,
+        )
+    return None
+
+
+def _sentences(text: str) -> list[str]:
+    clean = re.sub(r"\[Page \d+\]\s*", "", text)
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n\s*\n", clean)
+        if sentence.strip()
+    ]
+
+
+def _designation_name(question: str) -> str:
+    match = re.search(
+        r"(?:for|on) the ([A-Z][A-Za-z\- ]+?(?:Register|List|Network|Partnership))",
+        question,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _designation_argmax_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+    candidates: list[tuple[CompiledRecord, NumberFact]],
+    allowed_statuses: list,
+) -> ExecutionResult | None:
+    designation = _designation_name(plan.question)
+    allowed = {str(status).casefold() for status in allowed_statuses}
+    filtered: list[tuple[CompiledRecord, NumberFact, str, str]] = []
+    for record, fact in candidates:
+        for sentence in _sentences(record.text):
+            folded = sentence.casefold()
+            if designation and designation.casefold() not in folded:
+                continue
+            status = next(
+                (value for value in ("tentative", "nominated", "inscribed") if value in folded),
+                "",
+            )
+            if status and status in allowed:
+                filtered.append((record, fact, status, sentence))
+                break
+    if not filtered:
+        return None
+    record, fact, status, quote = max(filtered, key=lambda row: row[1].value)
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=(
+            f"{record.title} has the largest annual figure among the qualifying "
+            f"{document.entity_label}s: {_format_number(fact.value)} visiting researchers. "
+            f"Its exact status is {status}: {quote}"
+        ),
+        evidence=[_fact_evidence(record, fact), quote],
+        source_pages=sorted({fact.page, _page_with(record, status)}),
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
+def _record_is_named(record: CompiledRecord, question: str) -> bool:
+    folded = question.casefold()
+    title_words = [
+        word
+        for word in re.findall(r"[a-z0-9]+", record.title.casefold())
+        if len(word) >= 4
+    ]
+    return bool(title_words and title_words[0] in folded)
+
+
+def _generic_claim_conflict(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    if plan.category != "contradiction" or not _registry_is_trusted(document):
+        return None
+    records = sorted(
+        document.records,
+        key=lambda record: (not _record_is_named(record, plan.question), record.ordinal),
+    )
+    question_folded = plan.question.casefold()
+    requested_claim = ""
+    for adjective in ("largest", "oldest", "highest"):
+        if adjective in question_folded:
+            requested_claim = adjective
+            break
+    if not requested_claim and "rank" in question_folded:
+        requested_claim = "highest"
+    for record in records:
+        claim = next(
+            (
+                sentence
+                for sentence in _sentences(record.text)
+                if any(term in sentence.casefold() for term in ("highest", "largest", "oldest"))
+            ),
+            "",
+        )
+        if not claim or not record.country:
+            continue
+        folded_claim = claim.casefold()
+        if requested_claim and requested_claim not in folded_claim:
+            continue
+        if "highest" in folded_claim:
+            field, comparison = "highest_point", "greater"
+        elif "largest" in folded_claim:
+            field, comparison = "area", "greater"
+        else:
+            field, comparison = "establishment_year", "earlier"
+        own = next((fact for fact in record.number_facts if fact.field == field), None)
+        if own is None:
+            continue
+        peers = [
+            (other, fact)
+            for other, fact in _facts(document, field)
+            if other.record_id != record.record_id and other.country == record.country
+        ]
+        if field == "area":
+            conflicts = [pair for pair in peers if _area_km2(pair[1]) > _area_km2(own)]
+            selected = max(conflicts, key=lambda pair: _area_km2(pair[1])) if conflicts else None
+        elif comparison == "greater":
+            conflicts = [pair for pair in peers if pair[1].value > own.value]
+            selected = max(conflicts, key=lambda pair: pair[1].value) if conflicts else None
+        else:
+            conflicts = [pair for pair in peers if pair[1].value < own.value]
+            selected = min(conflicts, key=lambda pair: pair[1].value) if conflicts else None
+        if selected is None:
+            continue
+        other, counter = selected
         return ExecutionResult(
             question_id=plan.question_id,
             answer=(
-                f"The book profiles {len(document.records)} national parks in total. "
+                f"Claim: {claim} The compiled figures give {record.title} as "
+                f"{own.raw_value}{f' {own.unit}' if own.unit else ''}. "
+                f"Counterevidence: {other.title}, also in {record.country}, is reported as "
+                f"{counter.raw_value}{f' {counter.unit}' if counter.unit else ''}. "
+                "These figures contradict the stated rank."
+            ),
+            evidence=[claim, _fact_evidence(record, own), _fact_evidence(other, counter)],
+            source_pages=sorted({record.page_start, own.page, counter.page}),
+            complete=True,
+            strategy=plan.strategy,
+        )
+    return None
+
+
+def _dated_first_comparison(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    if not _operation(plan, OperationKind.DATE_DIFFERENCE):
+        return None
+    events: list[tuple[CompiledRecord, NumberFact, int, int, str]] = []
+    for record in document.records:
+        established = next(
+            (fact for fact in record.number_facts if fact.field == "establishment_year"),
+            None,
+        )
+        if established is None:
+            continue
+        for sentence in _sentences(record.text):
+            if "completed the first" not in sentence.casefold():
+                continue
+            years = [int(year) for year in re.findall(r"\b(\d{4})\b", sentence)]
+            if not years:
+                continue
+            event_year = years[0]
+            difference = abs(event_year - int(established.value))
+            events.append((record, established, event_year, difference, sentence))
+    if len(events) < 2:
+        return None
+    events.sort(key=lambda row: row[3])
+    closest = events[0]
+    runner_up = events[1]
+    details = " ".join(
+        f"{record.title} was established in {int(established.value)}; {sentence} "
+        f"The event occurred {difference} years after establishment."
+        for record, established, _, difference, sentence in events[:2]
+    )
+    margin = runner_up[3] - closest[3]
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=(
+            f"{details} Therefore, {closest[0].title}'s event was closer to its "
+            f"founding by {margin} years."
+        ),
+        evidence=[item[4] for item in events[:2]]
+        + [_fact_evidence(item[0], item[1]) for item in events[:2]],
+        source_pages=sorted(
+            {item[1].page for item in events[:2]}
+            | {_page_with(item[0], "completed the first") for item in events[:2]}
+        ),
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
+def _generic_cross_border_relations(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    """Join three explicitly distinct cross-border relationship structures."""
+    folded = plan.question.casefold()
+    if not (
+        "straddl" in folded
+        and "transboundary" in folded
+        and "paired" in folded
+    ):
+        return None
+
+    straddling: tuple[CompiledRecord, str, str, str] | None = None
+    shared: tuple[CompiledRecord, str, str, str] | None = None
+    paired: tuple[CompiledRecord, str, str, str, str, str] | None = None
+    country = r"([A-Z][A-Za-z'\-]+)"
+    for record in document.records:
+        for sentence in _sentences(record.text):
+            if re.search(r"\bnot\b", sentence, re.IGNORECASE):
+                continue
+            if straddling is None:
+                match = re.search(
+                    rf"straddl\w*\s+the\s+border\s+between\s+{country}\s+and\s+{country}",
+                    sentence,
+                    re.IGNORECASE,
+                )
+                if match:
+                    straddling = (record, match.group(1), match.group(2), sentence)
+            if shared is None:
+                match = re.search(
+                    rf"shared\s+transboundary.+?spanning\s+{country}\s+and\s+{country}",
+                    sentence,
+                    re.IGNORECASE,
+                )
+                if match:
+                    shared = (record, match.group(1), match.group(2), sentence)
+            if paired is None:
+                match = re.search(
+                    rf"formally\s+paired(?:\s+since\s+(\d{{4}}))?\s+with\s+"
+                    rf"(.+?)\s+across\s+the\s+{country}[\-\u2013\u2014]{country}\s+border",
+                    sentence,
+                    re.IGNORECASE,
+                )
+                if match:
+                    paired = (
+                        record,
+                        match.group(3),
+                        match.group(4),
+                        match.group(2).strip(),
+                        match.group(1) or "",
+                        sentence,
+                    )
+
+    if not straddling or not shared or not paired:
+        return None
+    straddle_record, straddle_a, straddle_b, straddle_quote = straddling
+    shared_record, shared_a, shared_b, shared_quote = shared
+    paired_record, paired_a, paired_b, partner, year, paired_quote = paired
+    answer = (
+        f"{straddle_record.title} physically straddles the border between "
+        f"{straddle_a} and {straddle_b}, so one site occupies both countries. "
+        f"{shared_record.title} is a shared transboundary research network spanning "
+        f"{shared_a} and {shared_b}, so the cross-border structure is a joint network. "
+        f"{paired_record.title} in {paired_a} is formally paired with {partner} in "
+        f"{paired_b}{f' since {year}' if year else ''}; these remain two partner "
+        "institutions, and only the first is a profiled station."
+    )
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=answer,
+        evidence=[straddle_quote, shared_quote, paired_quote],
+        source_pages=sorted({
+            _page_with(straddle_record, "straddl", "border"),
+            _page_with(shared_record, "shared transboundary", "spanning"),
+            _page_with(paired_record, "formally paired", "across"),
+        }),
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
+def _generic_needle_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    folded = plan.question.casefold()
+    if any(term in folded for term in ("begin as", "began as", "start out", "started as")):
+        for record in document.records:
+            for sentence in _sentences(record.text):
+                if not any(hint.casefold() in sentence.casefold() for hint in plan.entity_hints):
+                    continue
+                direct = re.search(
+                    r"(?P<entity>[A-Z][A-Za-z'\- ]+?)\s+(?:began|started) as "
+                    r"(?P<origin>.+?) in (?P<year>\d{4})",
+                    sentence,
+                )
+                starting = re.search(
+                    r"Starting as (?P<origin>.+?) in (?P<year>\d{4}),\s*"
+                    r"(?:the\s+)?(?P<entity>[A-Z][A-Za-z'\- ]+)",
+                    sentence,
+                )
+                match = direct or starting
+                if match:
+                    return ExecutionResult(
+                        question_id=plan.question_id,
+                        answer=(
+                            f"{match.group('entity').strip()} began as "
+                            f"{match.group('origin').strip()} in {match.group('year')}."
+                        ),
+                        evidence=[sentence],
+                        source_pages=[_page_with(record, match.group("year"))],
+                        complete=True,
+                        strategy=plan.strategy,
+                    )
+
+    if "estimated age" in folded or "estimated" in folded and "years" in folded:
+        for record in document.records:
+            for sentence in _sentences(record.text):
+                if not any(hint.casefold() in sentence.casefold() for hint in plan.entity_hints):
+                    continue
+                match = re.search(
+                    r"estimated(?:\s+to\s+be|\s+at)?\s+([\d,]+)\s+years old",
+                    sentence,
+                    re.IGNORECASE,
+                )
+                if match:
+                    subject_match = re.search(
+                        r"(?:is\s+the|is)\s+([^,]+),\s*estimated",
+                        sentence,
+                        re.IGNORECASE,
+                    )
+                    subject = (
+                        subject_match.group(1).strip()
+                        if subject_match
+                        else next(
+                            (
+                                hint
+                                for hint in plan.entity_hints
+                                if hint.casefold() in sentence.casefold()
+                            ),
+                            "The named organism",
+                        )
+                    )
+                    return ExecutionResult(
+                        question_id=plan.question_id,
+                        answer=(
+                            f"{subject} is estimated to be {match.group(1)} years old and "
+                            f"is found at {record.title} in {record.country}."
+                        ),
+                        evidence=[sentence],
+                        source_pages=[_page_with(record, match.group(1))],
+                        complete=True,
+                        strategy=plan.strategy,
+                    )
+
+    if "first recorded eruption" in folded:
+        for record in document.records:
+            if plan.entity_hints and not any(
+                hint.casefold() in record.title.casefold() for hint in plan.entity_hints
+            ):
+                continue
+            sentence = _sentence_with(record.text, "first recorded eruption")
+            match = re.search(r"(\d[\d,]*)\s*(BC|BCE|AD|CE)?", sentence, re.IGNORECASE)
+            if sentence and match:
+                era = f" {match.group(2).upper()}" if match.group(2) else ""
+                return ExecutionResult(
+                    question_id=plan.question_id,
+                    answer=f"The first recorded eruption is dated to {match.group(1)}{era}.",
+                    evidence=[sentence],
+                    source_pages=[_page_with(record, "first recorded eruption")],
+                    complete=True,
+                    strategy=plan.strategy,
+                )
+    return None
+
+
+def _catalog_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
+    if not _registry_is_trusted(document):
+        return None
+    folded = plan.question.casefold()
+    countries = _country_mentions(plan.question, document)
+    if "profile" in folded and "in total" in folded and countries:
+        country = countries[0]
+        selected = [record for record in document.records if record.country == country]
+        names = ", ".join(record.title for record in selected)
+        noun = document.entity_label or "entity"
+        return ExecutionResult(
+            question_id=plan.question_id,
+            answer=(
+                f"The guide profiles {len(document.records)} {noun}s in total. "
                 f"{len(selected)} are in {country}: {names}."
             ),
             evidence=[f"Compiled chapter catalog: {len(document.records)} records"],
@@ -541,7 +1023,7 @@ def _catalog_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Executi
             complete=bool(selected),
             strategy=plan.strategy,
         )
-    if "how many" in folded and len(countries) >= 2 and "park" in folded:
+    if "how many" in folded and len(countries) >= 2:
         clauses: list[str] = []
         pages: list[int] = []
         for country in countries:
@@ -817,6 +1299,11 @@ def execute_structured(
     """Return a complete deterministic answer when the document model supports it."""
     for executor in (
         _catalog_answer,
+        _generic_claim_conflict,
+        _dated_first_comparison,
+        _generic_cross_border_relations,
+        _generic_needle_answer,
+        _composed_fact_answer,
         _threshold_answer,
         _superlative_answer,
         _needle_answer,

@@ -38,7 +38,7 @@ from app.schemas import (
 from app.storage.run_store import RunStore
 from app.submission import IncrementalSubmissionWriter
 from app.v3.answerer import V3Answerer
-from app.v3.compiler import all_mapping_records, compile_document
+from app.v3.compiler import COMPILER_VERSION, all_mapping_records, compile_document
 from app.v3.exhaustive_mapper import ExhaustiveMapper
 from app.v3.models import (
     CompiledDocument,
@@ -116,6 +116,8 @@ class FullScanPipeline:
                 "catalog_records": len(compiled.records),
                 "supplementary_records": len(compiled.supplementary_records),
                 "mapping_records": len(records),
+                "registry_trusted": compiled.registry_trusted,
+                "registry_signals": compiled.registry_signals,
                 "warnings": compiled.warnings,
             },
         )
@@ -145,11 +147,18 @@ class FullScanPipeline:
 
     def _load_or_compile(self, document_id: str) -> CompiledDocument | None:
         compiled = self._store.load_compiled_document(document_id)
-        if compiled is not None:
+        if compiled is not None and compiled.compiler_version == COMPILER_VERSION:
             return compiled
         path = self._settings.parsed_dir / f"{document_id}_parsed.json"
         if not path.exists():
             return None
+        if compiled is not None:
+            logger.info(
+                "Recompiling %s because compiler version changed from %s to %s",
+                document_id,
+                compiled.compiler_version,
+                COMPILER_VERSION,
+            )
         _, pages = load_parsed_output(path)
         compiled = compile_document(document_id, pages)
         self._store.save_compiled_document(compiled)

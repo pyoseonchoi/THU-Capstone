@@ -45,6 +45,32 @@ def _chunks(items: list[T], size: int) -> list[list[T]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
+def _pack_records(
+    records: list[CompiledRecord],
+    *,
+    max_items: int,
+    max_characters: int,
+) -> list[list[CompiledRecord]]:
+    """Pack every record exactly once while bounding each request's source text."""
+    batches: list[list[CompiledRecord]] = []
+    current: list[CompiledRecord] = []
+    current_characters = 0
+    for record in records:
+        size = len(record.text)
+        if current and (
+            len(current) >= max_items
+            or current_characters + size > max_characters
+        ):
+            batches.append(current)
+            current = []
+            current_characters = 0
+        current.append(record)
+        current_characters += size
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _normalize_source(text: str) -> str:
     translations = str.maketrans(
         {
@@ -182,7 +208,12 @@ class ExhaustiveMapper:
                 else self._settings.record_batch_size
             )
             jobs.extend(
-                (record_batch, plan_batch) for record_batch in _chunks(records, record_batch_size)
+                (record_batch, plan_batch)
+                for record_batch in _pack_records(
+                    records,
+                    max_items=record_batch_size,
+                    max_characters=self._settings.record_batch_max_characters,
+                )
             )
         total = len(jobs)
         if progress_callback:
@@ -399,6 +430,11 @@ class ExhaustiveMapper:
                 "strategy": plan.strategy.value,
                 "candidate_topics": plan.candidate_topics,
                 "required_slots": plan.required_slots,
+                "operations": [
+                    step.model_dump(mode="json") for step in plan.operations
+                ],
+                "target_fields": plan.target_fields,
+                "entity_hints": plan.entity_hints,
             }
             for plan in plans
         ]
@@ -480,7 +516,11 @@ class ExhaustiveMapper:
         evidence: list[EvidenceCandidate] = []
         raw_evidence = row.get("evidence", row.get("evidence_items", []))
         if isinstance(raw_evidence, list):
-            for item in raw_evidence[:2]:
+            evidence_limit = min(
+                8,
+                max(2, len(plan.required_slots) + len(plan.operations) + 1),
+            )
+            for item in raw_evidence[:evidence_limit]:
                 if not isinstance(item, dict):
                     continue
                 proposed_quote = str(item.get("exact_quote", "")).strip()
@@ -501,6 +541,7 @@ class ExhaustiveMapper:
                         value=item.get("value", item.get("normalized_value")),
                         unit=str(item.get("unit", "")),
                         confidence=_bounded_confidence(item.get("confidence", 0.5)),
+                        record_ordinal=record.ordinal,
                     )
                 )
 
