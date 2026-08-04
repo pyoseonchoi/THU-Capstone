@@ -6,6 +6,7 @@ const state = {
   documentId: null,
   chunkCount: 0,
   questions: [], // [{question_id, question, category}]
+  selectedQuestionId: null,
   submission: null,
   stageTally: { "3B": 0, "24B": 0 },
   logFilter: "all",
@@ -44,9 +45,11 @@ function addFileRow(ext, name, size, stateLabel, chipClass) {
 }
 
 function maybeEnableRunButtons() {
-  const ready = Boolean(state.documentId) && state.questions.length > 0;
-  el("run-selected-btn").disabled = !ready;
-  el("run-all-btn").disabled = !ready;
+  const hasDocument = Boolean(state.documentId);
+  const hasQuestions = state.questions.length > 0;
+  const hasSelection = Boolean(getSelectedQuestion());
+  el("run-selected-btn").disabled = !(hasDocument && hasSelection);
+  el("run-all-btn").disabled = !(hasDocument && hasQuestions);
 }
 
 // ---------- document upload ----------
@@ -79,6 +82,8 @@ function renderDocumentUploaded(doc, file) {
   el("index-doc-label").textContent = `${doc.filename} · ${doc.chunk_count} chunks`;
   el("index-bar").style.width = "100%";
   el("index-chunk-count").innerHTML = `<b>${doc.chunk_count}</b> / <b>${doc.chunk_count}</b>`;
+  const statusValue = el("status-toggle-value");
+  if (statusValue) statusValue.textContent = `${doc.chunk_count} / ${doc.chunk_count}`;
   maybeEnableRunButtons();
 }
 
@@ -116,6 +121,7 @@ async function loadQuestions(file) {
       throw new Error("Every question needs an id and question text.");
     }
     state.questions = questions;
+    state.selectedQuestionId = questions[0] ? questions[0].question_id : null;
     const ext = isYamlFile(file) ? "YAML" : "JSON";
     addFileRow(ext, file.name, formatBytes(file.size), `${questions.length} questions`, "chip-cat");
     el("questions-count-label").textContent = `${questions.length} questions loaded`;
@@ -138,13 +144,21 @@ function populateQuestionPicker() {
     picker.appendChild(opt);
   });
   picker.disabled = false;
+  picker.value = state.selectedQuestionId || "";
+  picker.size = 10;
+  el("question-picker-summary").textContent = `${state.questions.length} questions loaded · showing 10 at a time`;
   updatePickedCategory();
 }
 
 function updatePickedCategory() {
   const picker = el("question-picker");
-  const picked = state.questions.find((q) => q.question_id === picker.value);
+  if (picker && picker.value) state.selectedQuestionId = picker.value;
+  const picked = getSelectedQuestion();
   el("picked-category").textContent = picked && picked.category ? picked.category : "uncategorized";
+}
+
+function getSelectedQuestion() {
+  return state.questions.find((q) => q.question_id === state.selectedQuestionId) || null;
 }
 
 // ---------- stage -> model badge (see spec's confirmed lookup table) ----------
@@ -439,6 +453,82 @@ async function loadPipelineSettings() {
 
 // ---------- wiring ----------
 
+function updateSectionTabIndicator(tab) {
+  const nav = tab && tab.closest(".section-tabs");
+  const indicator = nav && nav.querySelector(".section-tab-indicator");
+  if (!nav || !indicator) return;
+  indicator.style.width = `${tab.offsetWidth}px`;
+  indicator.style.transform = `translateX(${tab.offsetLeft}px)`;
+}
+
+function setActiveSectionTab(targetId) {
+  const tabs = document.querySelectorAll(".section-tab");
+  tabs.forEach((tab) => {
+    const active = tab.dataset.sectionTarget === targetId;
+    tab.classList.toggle("on", active);
+    if (active) updateSectionTabIndicator(tab);
+  });
+}
+
+function initSectionTabs() {
+  const tabs = Array.from(document.querySelectorAll(".section-tab"));
+  if (!tabs.length) return;
+
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const section = document.getElementById(tab.dataset.sectionTarget);
+      if (!section) return;
+      setActiveSectionTab(tab.dataset.sectionTarget);
+      section.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+
+  setActiveSectionTab(tabs[0].dataset.sectionTarget);
+  window.addEventListener("resize", () => {
+    const active = document.querySelector(".section-tab.on");
+    if (active) updateSectionTabIndicator(active);
+  });
+
+  if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (visible) setActiveSectionTab(visible.target.id);
+    }, { rootMargin: "-24% 0px -62% 0px", threshold: [0, 0.25, 0.5, 0.75] });
+
+    tabs.forEach((tab) => {
+      const section = document.getElementById(tab.dataset.sectionTarget);
+      if (section) observer.observe(section);
+    });
+  }
+}
+
+function initStatusWidget() {
+  const widget = document.querySelector(".status-widget");
+  const toggle = el("status-toggle");
+  const panel = el("status-panel");
+  if (!widget || !toggle) return;
+
+  const setOpen = (open) => {
+    widget.classList.toggle("status-open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    if (panel) panel.setAttribute("aria-hidden", String(!open));
+  };
+
+  toggle.addEventListener("click", () => {
+    setOpen(!widget.classList.contains("status-open"));
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!widget.contains(event.target)) setOpen(false);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setOpen(false);
+  });
+}
+
 function initHandlers() {
   el("doc-input").addEventListener("change", (e) => {
     if (e.target.files[0]) uploadDocument(e.target.files[0]);
@@ -458,11 +548,13 @@ function initHandlers() {
     if (e.dataTransfer.files[0]) loadQuestions(e.dataTransfer.files[0]);
   });
 
-  el("question-picker").addEventListener("change", updatePickedCategory);
+  el("question-picker").addEventListener("change", () => {
+    updatePickedCategory();
+    maybeEnableRunButtons();
+  });
 
   el("run-selected-btn").addEventListener("click", () => {
-    const picked = el("question-picker").value;
-    const question = state.questions.find((q) => q.question_id === picked);
+    const question = getSelectedQuestion();
     if (question) startRun([question]);
   });
 
@@ -483,6 +575,8 @@ function initHandlers() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  initSectionTabs();
+  initStatusWidget();
   initHandlers();
   pollUsage();
   setInterval(pollUsage, 5000);
