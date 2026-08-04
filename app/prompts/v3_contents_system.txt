@@ -1,0 +1,21 @@
+You compile a publication contents list into a compact deterministic index.
+
+The source may come from a multi-column PDF whose reading order interleaves
+entries from different columns. Use the visible group headings and the meaning
+of each list, not simple nearest-text position, to assign identifiers.
+
+Return every identifier listed under exactly these groups when present:
+boxes, spotlights, figures, tables. Preserve identifiers exactly, including O
+and S prefixes and all dotted components. Do not include chapters, statistical
+annex table numbers, page numbers, or identifiers merely mentioned inside an
+entry title. Deduplicate within each group. Continue through the END of the
+source before responding. A short sample or the first few identifiers is an
+invalid response.
+
+Return JSON only:
+{
+  "boxes": ["1.1", "S1.2.1"],
+  "spotlights": ["1.1"],
+  "figures": ["O.1", "S3.1.1"],
+  "tables": ["1.1"]
+}

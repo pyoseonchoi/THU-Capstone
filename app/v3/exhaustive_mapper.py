@@ -30,6 +30,7 @@ from app.v3.models import (
 logger = get_logger("v3.exhaustive_mapper")
 
 PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "v3_mapper_system.txt"
+MAPPER_CONTRACT_VERSION = "v2"
 TERMINAL_STATUSES = {"evidence_found", "no_evidence"}
 STATUS_PRIORITY = {
     "llm_failed": 0,
@@ -168,6 +169,58 @@ def _validated_topic_level(topic: str, level: str, quote: str) -> str:
     return level
 
 
+def _exact_topic_quote(
+    record: CompiledRecord,
+    topic: str,
+) -> tuple[str, int] | None:
+    """Return a source sentence when the candidate phrase is literally present."""
+    variants = [topic.strip()]
+    without_article = re.sub(r"^(?:the|a|an)\s+", "", topic.strip(), flags=re.I)
+    variants.append(without_article)
+    variants.append(
+        re.sub(r"\s+(?:designations?|status)$", "", without_article, flags=re.I)
+    )
+    for variant in dict.fromkeys(value for value in variants if len(value) >= 4):
+        words = re.findall(r"[A-Za-z0-9]+", variant)
+        if not words:
+            continue
+        pattern = re.compile(
+            r"\b" + r"[\s\-\u2013\u2014]+".join(map(re.escape, words)) + r"\b",
+            re.I,
+        )
+        for match in pattern.finditer(record.text):
+            start_candidates = [
+                record.text.rfind(delimiter, 0, match.start())
+                for delimiter in (". ", "? ", "! ", "\n")
+            ]
+            start = max(start_candidates) + 1
+            end_candidates = [
+                position
+                for delimiter in (". ", "? ", "! ", "\n")
+                if (position := record.text.find(delimiter, match.end())) >= 0
+            ]
+            end = min(end_candidates) + 1 if end_candidates else len(record.text)
+            quote = record.text[start:end].strip()
+            folded_quote = _normalize_source(quote)
+            absence_markers = (
+                "does not discuss",
+                "does not substantively discuss",
+                "does not mention",
+                "not discussed",
+                "never mentioned",
+                "never raised",
+                "no discussion of",
+                "absent from",
+                "without discussing",
+            )
+            if any(marker in folded_quote for marker in absence_markers):
+                continue
+            canonical = _canonical_quote(record, quote)
+            if canonical is not None:
+                return canonical
+    return None
+
+
 class ExhaustiveMapper:
     """Map unresolved questions across all records with complete pair coverage."""
 
@@ -243,6 +296,42 @@ class ExhaustiveMapper:
             if progress_callback:
                 progress_callback("mapping", processed, total, failed)
         return sorted(results, key=lambda result: (result.question_id, result.record_id))
+
+    async def map_selected_records(
+        self,
+        document: CompiledDocument,
+        records: list[CompiledRecord],
+        plans: list[V3QuestionPlan],
+        *,
+        model_override: str | None = None,
+    ) -> list[V3MapResult]:
+        """Re-map a small lexical repair set with an optionally stronger model."""
+        if not records or not plans:
+            return []
+        batch_size = 1 if any(
+            plan.strategy == Strategy.ABSENCE_MATRIX for plan in plans
+        ) else self._settings.record_batch_size
+        batches = _pack_records(
+            records,
+            max_items=batch_size,
+            max_characters=self._settings.record_batch_max_characters,
+        )
+        semaphore = asyncio.Semaphore(self._settings.max_concurrent_requests)
+
+        async def run(batch: list[CompiledRecord]) -> list[V3MapResult]:
+            async with semaphore:
+                return await self._map_batch(
+                    document,
+                    batch,
+                    plans,
+                    model_override=model_override,
+                )
+
+        grouped = await asyncio.gather(*(run(batch) for batch in batches))
+        return sorted(
+            [result for batch in grouped for result in batch],
+            key=lambda result: (result.question_id, result.record_id),
+        )
 
     async def repair_failures(
         self,
@@ -332,10 +421,19 @@ class ExhaustiveMapper:
         return sorted(merged, key=lambda result: (result.question_id, result.record_id))
 
     def _plan_batches(self, plans: list[V3QuestionPlan]) -> list[list[V3QuestionPlan]]:
-        absence = [plan for plan in plans if plan.strategy == Strategy.ABSENCE_MATRIX]
-        remaining = [plan for plan in plans if plan.strategy != Strategy.ABSENCE_MATRIX]
+        isolated = [
+            plan
+            for plan in plans
+            if plan.strategy
+            in {
+                Strategy.ABSENCE_MATRIX,
+                Strategy.CLAIM_COMPARE,
+                Strategy.EXHAUSTIVE_LOOKUP,
+            }
+        ]
+        remaining = [plan for plan in plans if plan not in isolated]
         batches: list[list[V3QuestionPlan]] = []
-        batches.extend(_chunks(absence, self._settings.question_batch_size))
+        batches.extend([[plan] for plan in isolated])
         batches.extend(_chunks(remaining, self._settings.question_batch_size))
         return batches
 
@@ -528,15 +626,29 @@ class ExhaustiveMapper:
                 if canonical is None:
                     continue
                 quote, page = canonical
+                role = str(item.get("role", "support"))
+                entity = str(item.get("entity", item.get("entity_name", "")))
+                claim = str(item.get("claim", "")).strip()
+                if (
+                    plan.strategy == Strategy.CLAIM_COMPARE
+                    and role == "claim"
+                    and plan.entity_hints
+                    and not any(
+                        hint.casefold() in f"{entity} {claim} {quote}".casefold()
+                        or hint.split()[0].casefold() in f"{entity} {claim} {quote}".casefold()
+                        for hint in plan.entity_hints
+                    )
+                ):
+                    continue
                 evidence.append(
                     EvidenceCandidate(
                         question_id=plan.question_id,
                         record_id=record.record_id,
-                        claim=str(item.get("claim", "")).strip(),
+                        claim=claim,
                         exact_quote=quote,
                         page=page,
-                        role=str(item.get("role", "support")),
-                        entity=str(item.get("entity", item.get("entity_name", ""))),
+                        role=role,
+                        entity=entity,
                         field=str(item.get("field", item.get("field_name", ""))),
                         value=item.get("value", item.get("normalized_value")),
                         unit=str(item.get("unit", "")),
@@ -558,7 +670,19 @@ class ExhaustiveMapper:
         )
         for topic in plan.candidate_topics:
             item = raw_by_topic.get(_topic_key(topic))
+            exact_presence = _exact_topic_quote(record, topic)
             if item is None:
+                if exact_presence is not None:
+                    quote, page = exact_presence
+                    topics.append(TopicAssessment(
+                        question_id=plan.question_id,
+                        record_id=record.record_id,
+                        topic=topic,
+                        level="mention_only",
+                        exact_quote=quote,
+                        page=page,
+                    ))
+                    continue
                 topics.append(
                     TopicAssessment(
                         question_id=plan.question_id,
@@ -572,6 +696,9 @@ class ExhaustiveMapper:
             if level not in {"substantive", "mention_only", "none", "uncertain"}:
                 level = "uncertain"
             quote = str(item.get("exact_quote", "")).strip()
+            if exact_presence is not None and level in {"none", "uncertain"}:
+                quote, page = exact_presence
+                level = "mention_only"
             level = _validated_topic_level(topic, level, quote)
             if level == "none":
                 quote = ""
@@ -662,6 +789,7 @@ class ExhaustiveMapper:
     ) -> str:
         payload = {
             "compiler": document.compiler_version,
+            "mapper_contract": MAPPER_CONTRACT_VERSION,
             "model": model,
             "records": [
                 [record.record_id, hashlib.sha256(record.text.encode()).hexdigest()]

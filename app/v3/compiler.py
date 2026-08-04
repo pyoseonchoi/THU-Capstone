@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import html
 import re
+from collections import Counter
 from collections.abc import Iterable
 
 from app.reduction.normalizer import parse_number
 from app.schemas import DocumentPage
 from app.v3.models import CompiledDocument, CompiledRecord, NumberFact
+from app.v3.table_compiler import compile_contents, compile_tables
 
-COMPILER_VERSION = "v3.1"
+COMPILER_VERSION = "v3.2"
 
 _HEADING_PREFIX_RE = re.compile(r"^#{1,6}\s*")
 _HEADING_RE = re.compile(r"^(?P<marks>#{1,6})\s+(?P<title>.+?)\s*$")
@@ -35,6 +37,28 @@ _TITLE_EXCLUSIONS = {
     "facts and figures",
     "at a glance",
 }
+_INLINE_PROFILE_RE = re.compile(
+    r"\b(?P<label>[A-Z][A-Z _-]{2,30})\s+(?P<ordinal>\d{1,4})\s*:\s*"
+    r"(?P<title>[^.\n]{3,140}?)(?=\.\s+(?:COUNTRY|LOCATION|REGION)\s*:|[.\n])"
+)
+_INLINE_PROFILE_EXCLUSIONS = {
+    "box",
+    "chapter",
+    "figure",
+    "page",
+    "section",
+    "spotlight",
+    "table",
+}
+_INLINE_FACT_RE = re.compile(
+    r"\b(?P<kind>[A-Z][A-Z _-]{1,40})\s+IN\s+NUMBERS\s*:\s*"
+    r"(?P<body>.*?)(?=\.(?:\s+[A-Z]|\s*\[Page\s+\d+\]|$))",
+    re.I | re.S,
+)
+_INLINE_FACT_ITEM_RE = re.compile(
+    r"^(?P<label>[A-Za-z][^\d;]{0,120}?)\s+"
+    r"(?P<raw>[<>]?\s*-?\d[\d,.]*(?:\.\d+)?)\s*(?P<unit>.*)$"
+)
 
 _COUNTRY_ALIASES = {
     "Albania": ("albania", "albanian"),
@@ -126,11 +150,12 @@ def _is_record_title(line: str) -> bool:
 
 def _find_country(record_text: str) -> str:
     explicit = re.search(
-        r"(?im)^\s*(?:\*\*|__)?country\s*:\s*(.+?)(?:\*\*|__)?\s*$",
+        r"(?i)(?:^|\b)(?:\*\*|__)?country\s*:\s*"
+        r"(?P<country>[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*){0,4})",
         record_text,
     )
     if explicit:
-        value = re.sub(r"[*_`#]", "", explicit.group(1)).strip(" .")
+        value = re.sub(r"[*_`#]", "", explicit.group("country")).strip(" .")
         if value:
             return value
 
@@ -164,13 +189,23 @@ def _find_country(record_text: str) -> str:
 
 def _slug_label(label: str) -> str:
     folded = html.unescape(label).casefold()
-    if any(term in folded for term in ("area covered", "area monitored", "monitored area")):
+    if any(
+        term in folded
+        for term in (
+            "area covered",
+            "area monitored",
+            "monitored area",
+            "monitored reservoir",
+            "project area",
+        )
+    ):
         return "area"
     if any(
         term in folded
         for term in (
             "highest point",
             "highest peak",
+            "highest crest",
             "highest operating point",
             "operating elevation",
         )
@@ -181,7 +216,17 @@ def _slug_label(label: str) -> str:
         and ("annual" in folded or "per year" in folded)
     ):
         return "annual_visitors"
-    if "year established" in folded or folded.startswith("established"):
+    if (
+        ("generation" in folded or "output" in folded or "pumping-equivalent" in folded)
+        and ("annual" in folded or "gigawatt" in folded)
+    ):
+        return "annual_output"
+    if (
+        "year established" in folded
+        or folded.startswith("established")
+        or folded.startswith("commissioned")
+        or "commissioning year" in folded
+    ):
         return "establishment_year"
     if "estimated age" in folded and ("tree" in folded or "cedar" in folded):
         return "oldest_tree_age"
@@ -215,6 +260,10 @@ def _extract_unit(label: str) -> str:
         return "visitors/year"
     if re.search(r"\b(?:bc|bce)\b", folded):
         return "year_bc"
+    if "gigawatt" in folded:
+        return "GWh"
+    if "ppp" in folded and "$" in folded:
+        return "2021 PPP $"
     return unit
 
 
@@ -321,6 +370,147 @@ def parse_number_facts(
         else:
             pending_label = line
     return facts
+
+
+def _page_at_offset(text: str, offset: int, default: int) -> int:
+    page = default
+    for marker in re.finditer(r"\[Page (\d+)\]", text[:offset]):
+        page = int(marker.group(1))
+    return page
+
+
+def parse_inline_number_facts(
+    record_id: str,
+    default_page: int,
+    record_text: str,
+) -> list[NumberFact]:
+    """Parse semicolon-delimited ``X IN NUMBERS`` statements inside prose."""
+    facts: list[NumberFact] = []
+    scan_text = re.sub(
+        r"([A-Za-z])\s*\[Page \d+\]\s*([A-Za-z])",
+        r"\1\2",
+        record_text,
+    )
+    scan_text = re.sub(r"\s*\[Page \d+\]\s*", " ", scan_text)
+    for marker in _INLINE_FACT_RE.finditer(scan_text):
+        page = default_page
+        for raw_item in marker.group("body").split(";"):
+            item = re.sub(r"\s+", " ", raw_item).strip(" .")
+            match = _INLINE_FACT_ITEM_RE.match(item)
+            if not match:
+                continue
+            label = match.group("label").strip(" :-")
+            raw = re.sub(r"\s+", "", match.group("raw"))
+            unit = match.group("unit").strip(" .")
+            normalized_label = f"{label} ({unit})" if unit else label
+            value = _normalize_card_value(raw, normalized_label)
+            if value is None:
+                continue
+            facts.append(NumberFact(
+                record_id=record_id,
+                field=_slug_label(label),
+                label=label,
+                value=value,
+                raw_value=raw,
+                unit=_extract_unit(normalized_label),
+                subject=_extract_subject(label),
+                page=page,
+                quote=f"{label}: {raw}{f' {unit}' if unit else ''}",
+            ))
+    return facts
+
+
+def _paged_source(pages: list[DocumentPage]) -> str:
+    return "\n\n".join(f"[Page {page.page_number}]\n{page.text}" for page in pages)
+
+
+def _inline_profile_matches(text: str) -> tuple[str, list[re.Match[str]]]:
+    grouped: dict[str, list[re.Match[str]]] = {}
+    for match in _INLINE_PROFILE_RE.finditer(text):
+        label = re.sub(r"\s+", " ", match.group("label")).strip().casefold()
+        if label in _INLINE_PROFILE_EXCLUSIONS:
+            continue
+        grouped.setdefault(label, []).append(match)
+    candidates: list[tuple[int, int, str, list[re.Match[str]]]] = []
+    for label, matches in grouped.items():
+        ordinals = [int(match.group("ordinal")) for match in matches]
+        unique = sorted(set(ordinals))
+        if len(unique) < 3:
+            continue
+        expected = unique[-1] - unique[0] + 1
+        continuity = len(unique) / expected if expected else 0
+        candidates.append((round(continuity * 1000), len(unique), label, matches))
+    if not candidates:
+        return "", []
+    _, _, label, matches = max(candidates, key=lambda item: (item[0], item[1]))
+    return label, matches
+
+
+def _compile_inline_profiles(
+    document_id: str,
+    pages: list[DocumentPage],
+) -> tuple[list[CompiledRecord], list[CompiledRecord], str, bool, dict[str, int]] | None:
+    source = _paged_source(pages)
+    label, matches = _inline_profile_matches(source)
+    if not matches:
+        return None
+    records: list[CompiledRecord] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(source)
+        text = source[match.start() : end].strip()
+        ordinal = int(match.group("ordinal"))
+        record_id = f"record-{ordinal:03d}"
+        page_start = _page_at_offset(source, match.start(), pages[0].page_number)
+        page_end = _page_at_offset(source, max(match.start(), end - 1), page_start)
+        title = re.sub(r"\s+", " ", match.group("title")).strip(" .")
+        records.append(CompiledRecord(
+            record_id=record_id,
+            ordinal=ordinal,
+            title=title,
+            country=_find_country(text),
+            page_start=page_start,
+            page_end=page_end,
+            anchor_page=page_start,
+            text=text,
+            number_facts=parse_inline_number_facts(record_id, page_start, text),
+        ))
+
+    supplementary: list[CompiledRecord] = []
+    prefix = source[: matches[0].start()].strip()
+    if prefix:
+        supplement_end = _page_at_offset(source, matches[0].start(), pages[0].page_number)
+        supplementary.append(CompiledRecord(
+            record_id="supplement-001",
+            ordinal=len(records) + 1,
+            title="Front matter",
+            page_start=pages[0].page_number,
+            page_end=supplement_end,
+            anchor_page=pages[0].page_number,
+            text=prefix,
+        ))
+
+    ordinals = [record.ordinal for record in records]
+    expected = set(range(min(ordinals), max(ordinals) + 1))
+    missing = expected - set(ordinals)
+    titles_unique = len({record.title.casefold() for record in records}) == len(records)
+    countries_complete = all(record.country for record in records)
+    facts_complete = all(record.number_facts for record in records)
+    trusted = not missing and titles_unique and countries_complete and facts_complete
+    facts = Counter(fact.field for record in records for fact in record.number_facts)
+    first_kind = next(
+        (match.group("kind") for match in _INLINE_FACT_RE.finditer(records[0].text)),
+        label,
+    )
+    signals = {
+        "profile_markers": len(matches),
+        "record_titles": len(records),
+        "unique_titles": len({record.title.casefold() for record in records}),
+        "missing_ordinals": len(missing),
+        "records_with_country": sum(bool(record.country) for record in records),
+        "records_with_facts": sum(bool(record.number_facts) for record in records),
+        "distinct_fact_fields": len(facts),
+    }
+    return records, supplementary, first_kind.casefold(), trusted, signals
 
 
 def _marker_pages(pages: Iterable[DocumentPage]) -> list[int]:
@@ -436,11 +626,57 @@ def _entity_label(marker_title: str) -> str:
     return "entity"
 
 
+def _field_catalog(
+    records: list[CompiledRecord],
+    tables,
+) -> list[str]:
+    fields = {fact.field for record in records for fact in record.number_facts}
+    for table in tables:
+        fields.update(table.columns)
+        for row in table.rows:
+            fields.update(row.values)
+    return sorted(field for field in fields if field)
+
+
 def compile_document(
     document_id: str,
     pages: list[DocumentPage],
 ) -> CompiledDocument:
     """Compile a trusted repeated-entity registry or exhaustive fallback segments."""
+    tables = compile_tables(pages)
+    contents_text, contents_pages, contents_entries, contents_trusted = compile_contents(pages)
+    inline = _compile_inline_profiles(document_id, pages)
+    if inline is not None:
+        records, supplementary, entity_label, trusted, signals = inline
+        warnings = [] if trusted else [
+            "Inline repeated-entity registry failed a completeness check"
+        ]
+        warnings.extend(
+            warning
+            for table in tables
+            for warning in table.warnings
+            if table.rows
+        )
+        return CompiledDocument(
+            document_id=document_id,
+            compiler_version=COMPILER_VERSION,
+            record_kind="repeated_entity",
+            entity_label=entity_label,
+            records=records,
+            supplementary_records=supplementary,
+            tables=tables,
+            contents_entries=contents_entries,
+            contents_text=contents_text,
+            contents_pages=contents_pages,
+            contents_trusted=contents_trusted,
+            field_catalog=_field_catalog(records, tables),
+            unassigned_text=supplementary[0].text if supplementary else "",
+            page_count=len(pages),
+            registry_trusted=trusted,
+            registry_signals=signals,
+            warnings=warnings,
+        )
+
     anchors = _marker_pages(pages)
     if len(anchors) < 3:
         records = _segment_pages(document_id, pages)
@@ -449,9 +685,27 @@ def compile_document(
             compiler_version=COMPILER_VERSION,
             record_kind="segments",
             records=records,
+            tables=tables,
+            contents_entries=contents_entries,
+            contents_text=contents_text,
+            contents_pages=contents_pages,
+            contents_trusted=contents_trusted,
+            field_catalog=_field_catalog(records, tables),
             page_count=len(pages),
-            registry_signals={"fact_sections": len(anchors)},
-            warnings=["No repeated fact-section structure detected"],
+            registry_signals={
+                "fact_sections": len(anchors),
+                "tables": len(tables),
+                "trusted_tables": sum(table.trusted for table in tables),
+            },
+            warnings=[
+                "No repeated fact-section structure detected",
+                *[
+                    warning
+                    for table in tables
+                    for warning in table.warnings
+                    if table.rows
+                ],
+            ],
         )
 
     page_by_number = {page.page_number: page for page in pages}
@@ -541,6 +795,12 @@ def compile_document(
         entity_label=_entity_label(marker_title),
         records=records,
         supplementary_records=supplementary,
+        tables=tables,
+        contents_entries=contents_entries,
+        contents_text=contents_text,
+        contents_pages=contents_pages,
+        contents_trusted=contents_trusted,
+        field_catalog=_field_catalog(records, tables),
         unassigned_text=unassigned_text,
         page_count=len(pages),
         registry_trusted=trusted,

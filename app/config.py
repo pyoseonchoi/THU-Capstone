@@ -70,8 +70,9 @@ class Settings(BaseSettings):
     # Submission metadata
     team_name: str = ""
     submission_notes: str = (
-        "Compiled document catalog, deterministic structured reduction, exhaustive "
-        "coverage matrices, and evidence-grounded hierarchical synthesis."
+        "Schema-compiled entity and table catalogs, caption-validated contents indexes, "
+        "composable Python reduction, exhaustive coverage matrices, and targeted "
+        "hierarchical synthesis."
     )
 
     # LLM parameters
@@ -81,7 +82,7 @@ class Settings(BaseSettings):
 
     # Prompt versions – bump when prompts change to invalidate cache
     prompt_version_planner: str = "v3"
-    prompt_version_mapper: str = "v4"
+    prompt_version_mapper: str = "v5"
     prompt_version_verifier: str = "v3"
     prompt_version_answer: str = "v4"
 

@@ -202,17 +202,7 @@ def reduce_absence(
         support_counts[topic] = sum(item.level in disqualifying for item in assessments)
     absent = [topic for topic, count in support_counts.items() if count == 0]
     if len(absent) != 1:
-        if not allow_partial or not support_counts:
-            return None
-        ordered = sorted(support_counts.items(), key=lambda item: item[1])
-        unique_low_outlier = (
-            len(ordered) > 1
-            and ordered[0][1] < ordered[1][1]
-            and ordered[1][1] >= max(2, ordered[0][1] + 2)
-        )
-        if not unique_low_outlier:
-            return None
-        absent = [ordered[0][0]]
+        return None
 
     if allow_partial and not complete_coverage:
         present = set(plan.candidate_topics) - set(absent)
@@ -263,8 +253,6 @@ def reduce_absence(
             "Best-effort absence conclusion after targeted repair: "
             f"{len(terminal_records)}/{len(expected_record_ids)} records terminal"
         )
-    if support_counts[missing_topic] > 0:
-        warnings.append("Ignored a unique low-support semantic outlier for the absent topic")
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
