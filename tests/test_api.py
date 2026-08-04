@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 
 from app.api import main as api_main
 from app.api.main import app
-from app.schemas import DocumentChunk, DocumentMetadata, PipelineAnswer, PipelineRun, QuestionRequest
+from app.schemas import (
+    DocumentChunk,
+    DocumentMetadata,
+    PipelineAnswer,
+    PipelineRun,
+    QuestionRequest,
+)
 
 
 @pytest.fixture
@@ -54,7 +60,9 @@ class TestAnswerJobs:
 class TestAnswerJobProgressQueue:
     async def test_progress_events_are_queued_in_order(self, monkeypatch):
         class FakeJobPipeline:
-            async def answer_questions(self, document_id, questions, mode=None, progress_callback=None):
+            async def answer_questions(
+                self, document_id, questions, mode=None, progress_callback=None
+            ):
                 if progress_callback:
                     progress_callback("mapping", 1, 2, 0)
                     progress_callback("answering", 2, 2, 0)
