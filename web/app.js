@@ -84,25 +84,40 @@ function renderDocumentUploaded(doc, file) {
 
 // ---------- question set ----------
 
+function isYamlFile(file) {
+  return /\.(ya?ml)$/i.test(file.name);
+}
+
+function parseQuestionData(text, file) {
+  if (isYamlFile(file)) {
+    if (typeof jsyaml === "undefined") {
+      throw new Error("YAML parser failed to load (check your internet connection) — try a .json file instead.");
+    }
+    return jsyaml.load(text);
+  }
+  return JSON.parse(text);
+}
+
 async function loadQuestions(file) {
   clearError();
   try {
     const text = await file.text();
-    const data = JSON.parse(text);
+    const data = parseQuestionData(text, file);
     const items = Array.isArray(data) ? data : data.questions;
     if (!Array.isArray(items)) {
-      throw new Error("JSON must be an array of questions, or an object with a questions array.");
+      throw new Error("The file must be a list of questions, or an object with a questions list.");
     }
     const questions = items.map((item) => ({
       question_id: String(item.id ?? item.question_id ?? ""),
-      question: String(item.question ?? item.text ?? ""),
+      question: String(item.question ?? item.text ?? "").trim(),
       category: String(item.category ?? ""),
     }));
     if (questions.some((q) => !q.question_id || !q.question)) {
       throw new Error("Every question needs an id and question text.");
     }
     state.questions = questions;
-    addFileRow("JSON", file.name, formatBytes(file.size), `${questions.length} questions`, "chip-cat");
+    const ext = isYamlFile(file) ? "YAML" : "JSON";
+    addFileRow(ext, file.name, formatBytes(file.size), `${questions.length} questions`, "chip-cat");
     el("questions-count-label").textContent = `${questions.length} questions loaded`;
     el("stat-question-count").textContent = questions.length;
     populateQuestionPicker();

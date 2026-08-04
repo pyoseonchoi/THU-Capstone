@@ -62,8 +62,8 @@
       </div>
 
       <div class="row">
-        <label class="browse" for="questions-input">Choose question set (JSON)</label>
-        <input type="file" id="questions-input" accept=".json" hidden>
+        <label class="browse" for="questions-input">Choose question set (JSON or YAML)</label>
+        <input type="file" id="questions-input" accept=".json,.yaml,.yml" hidden>
         <span class="sub" id="questions-count-label">not uploaded yet</span>
       </div>
 
@@ -151,6 +151,7 @@
     </div>
   </main>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
