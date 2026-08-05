@@ -22,14 +22,14 @@ PDF/TXT
   -> per-record structured profiling (only when the registry has holes)
        -> induced metric vocabulary, then one cheap call per record
        -> every fact kept must be quoted verbatim from its own record
-  -> question routing against the discovered field list
-       -> each question placed on the operation that answers it, by meaning
-       -> arguments (field, groups, threshold, direction) bounded to the
-          document's own fields and groups, and declined when unsure
        -> flattened multi-page table reconstruction and ranked-row validation
        -> body-caption cross-validation for interleaved Contents lists
        -> consecutive fallback segments for arbitrary Markdown
        -> supplementary front/back-matter records
+  -> question routing against the discovered field list
+       -> each question placed on the operation that answers it, by meaning
+       -> arguments (field, groups, threshold, direction) bounded to the
+          document's own fields and groups, and declined when unsure
   -> deterministic question compiler with composable operation plans
   -> Python structured executor for FILTER, GROUP_BY, COUNT, LIST, ARGMAX,
      ARGMIN, JOIN, comparison, and date math
