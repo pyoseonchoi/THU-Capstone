@@ -455,13 +455,30 @@ def _designation_argmax_answer(
 
 
 def _record_is_named(record: CompiledRecord, question: str) -> bool:
-    folded = question.casefold()
+    """Whether the question names this record, allowing for a shared stem.
+
+    A question may name a landmark by an adjectival or shortened form of the
+    record's own title ("Snowdon" for "Snowdonia National Park", "Croatia"
+    for a record titled with "Croatian ..."). Exact substring matching missed
+    these, silently falling back to whichever record happened to be scanned
+    first. Prefix matching in either direction catches this class of
+    variation without hardcoding any specific name pair.
+    """
     title_words = [
         word
         for word in re.findall(r"[a-z0-9]+", record.title.casefold())
         if len(word) >= 4
     ]
-    return bool(title_words and title_words[0] in folded)
+    if not title_words:
+        return False
+    first = title_words[0]
+    question_words = [
+        word for word in re.findall(r"[a-z0-9]+", question.casefold()) if len(word) >= 4
+    ]
+    return any(
+        first == word or first.startswith(word) or word.startswith(first)
+        for word in question_words
+    )
 
 
 def _generic_claim_conflict(
@@ -482,6 +499,14 @@ def _generic_claim_conflict(
             break
     if not requested_claim and "rank" in question_folded:
         requested_claim = "highest"
+    if not requested_claim:
+        # Nothing in the question names a superlative-type claim, so this
+        # function's whole strategy (find a "largest/oldest/highest" claim
+        # and a contradicting figure) does not apply -- e.g. a units-mismatch
+        # or a different contradiction shape entirely. Returning None here
+        # lets a more specific executor answer instead of this one guessing
+        # at any "highest/largest/oldest" sentence it can find.
+        return None
     for record in records:
         claim_candidates = []
         for sentence in _sentences(record.text):
