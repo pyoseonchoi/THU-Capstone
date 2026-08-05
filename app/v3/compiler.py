@@ -214,7 +214,14 @@ def _find_country(record_text: str) -> str:
     return max(scores, key=lambda name: (scores[name], -positions[name]))
 
 
-def _slug_label(label: str) -> str:
+def field_id(label: str) -> str:
+    """Reduce a metric's wording to the identifier facts are grouped under.
+
+    Every stage that binds a number to a field must route through here. Two
+    stages deriving their own identifiers would split one measurement across
+    two fields, and a field split in half never reaches the full coverage
+    that deterministic reduction requires.
+    """
     folded = html.unescape(label).casefold()
     if any(
         term in folded
@@ -259,8 +266,75 @@ def _slug_label(label: str) -> str:
         return "oldest_tree_age"
     if "first recorded eruption" in folded:
         return "first_recorded_eruption_year"
-    normalized = re.sub(r"[^a-z0-9]+", "_", folded).strip("_")
+    # A label names the measurement before any colon; what follows is the
+    # specific thing measured, and a parenthetical carries the unit. Neither
+    # belongs to the field's identity, or "Highest point: Mount A" and
+    # "Highest point: Mount B" would be two fields instead of one.
+    text = re.sub(r"\([^)]*\)", " ", folded.split(":", 1)[0])
+    normalized = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
     return normalized[:80] or "number"
+
+
+_FIELD_STOPWORDS = frozenset({
+    "a", "an", "and", "at", "been", "by", "for", "have", "in", "is",
+    "its", "of", "on", "or", "per", "s", "that", "the", "to", "was", "with",
+})
+
+
+def _field_terms(field: str) -> frozenset[str]:
+    return frozenset(
+        term for term in field.split("_") if term and term not in _FIELD_STOPWORDS
+    )
+
+
+def merge_synonym_fields(records: list[CompiledRecord]) -> dict[str, str]:
+    """Fold fields that are one measurement written two ways.
+
+    A document does not always spell a metric the same way twice — a fact card
+    may read "Year established" in one chapter and "Established" in the next —
+    and a metric split across two fields never reaches the coverage that
+    deterministic reduction requires. Two signals identify a split without any
+    knowledge of the subject: one field's terms are contained in the other's,
+    and no record reports both, because a record states each measurement once.
+
+    Returns the applied mapping from folded field to surviving field.
+    """
+    holders: dict[str, set[str]] = {}
+    for record in records:
+        for fact in record.number_facts:
+            holders.setdefault(fact.field, set()).add(record.record_id)
+    terms = {field: _field_terms(field) for field in holders}
+    # Terms contained by many fields describe a shape common to the document
+    # ("number of ...", "length of ...") rather than one specific measurement.
+    containers = {
+        field: sum(
+            1
+            for other in holders
+            if other != field and terms[field] and terms[field] <= terms[other]
+        )
+        for field in holders
+    }
+    order = sorted(holders, key=lambda field: (-len(holders[field]), field))
+    mapping: dict[str, str] = {}
+    for index, survivor in enumerate(order):
+        if survivor in mapping:
+            continue
+        for folded in order[index + 1:]:
+            if folded in mapping or not terms[folded]:
+                continue
+            if not terms[folded] < terms[survivor]:
+                continue
+            if containers[folded] > 2:
+                continue
+            if not holders[folded].isdisjoint(holders[survivor]):
+                continue
+            mapping[folded] = survivor
+            holders[survivor] |= holders[folded]
+    if mapping:
+        for record in records:
+            for fact in record.number_facts:
+                fact.field = mapping.get(fact.field, fact.field)
+    return mapping
 
 
 def _extract_unit(label: str) -> str:
@@ -352,7 +426,7 @@ def parse_number_facts(
             return
         facts.append(NumberFact(
             record_id=record_id,
-            field=_slug_label(label),
+            field=field_id(label),
             label=label,
             value=value,
             raw_value=raw,
@@ -435,7 +509,7 @@ def parse_inline_number_facts(
                 continue
             facts.append(NumberFact(
                 record_id=record_id,
-                field=_slug_label(label),
+                field=field_id(label),
                 label=label,
                 value=value,
                 raw_value=raw,
@@ -821,6 +895,12 @@ def _field_catalog(
     return sorted(field for field in fields if field)
 
 
+def _finalize_fields(records: list[CompiledRecord], tables) -> list[str]:
+    """Fold wording variants together, then report what fields remain."""
+    merge_synonym_fields(records)
+    return _field_catalog(records, tables)
+
+
 def compile_document(
     document_id: str,
     pages: list[DocumentPage],
@@ -852,7 +932,7 @@ def compile_document(
             contents_text=contents_text,
             contents_pages=contents_pages,
             contents_trusted=contents_trusted,
-            field_catalog=_field_catalog(records, tables),
+            field_catalog=_finalize_fields(records, tables),
             unassigned_text=supplementary[0].text if supplementary else "",
             page_count=len(pages),
             registry_trusted=trusted,
@@ -873,7 +953,7 @@ def compile_document(
             contents_text=contents_text,
             contents_pages=contents_pages,
             contents_trusted=contents_trusted,
-            field_catalog=_field_catalog(records, tables),
+            field_catalog=_finalize_fields(records, tables),
             page_count=len(pages),
             registry_signals={
                 "fact_sections": len(anchors),
@@ -1001,7 +1081,7 @@ def compile_document(
         contents_text=contents_text,
         contents_pages=contents_pages,
         contents_trusted=contents_trusted,
-        field_catalog=_field_catalog(records, tables),
+        field_catalog=_finalize_fields(records, tables),
         unassigned_text=unassigned_text,
         page_count=len(pages),
         registry_trusted=trusted,

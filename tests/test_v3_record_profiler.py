@@ -11,6 +11,7 @@ from app.llm.base import BaseLLMClient, LLMResponse
 from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.v3.models import CompiledDocument, CompiledRecord
+from app.v3.compiler import field_id
 from app.v3.record_profiler import RecordProfiler, metric_field
 
 
@@ -153,7 +154,7 @@ async def test_catalog_keeps_repeated_metrics_and_drops_one_offs(tmp_path):
     )
     await profiler.profile(document)
 
-    assert document.field_catalog == ["area_covered"]
+    assert document.field_catalog == ["area"]
     assert any(f.field == "dragons" for f in records[0].number_facts)
 
 
@@ -210,8 +211,24 @@ async def test_failed_profiles_are_reported_not_hidden(tmp_path):
     assert document.registry_signals["profile_failures"] == 1
 
 
-def test_metric_field_strips_record_specific_detail():
-    assert metric_field("Highest point: Mount Kebnekaise (m)") == "highest_point"
-    assert metric_field("Highest point") == "highest_point"
-    assert metric_field("Area covered (sq km)") == "area_covered"
-    assert metric_field("Annual output (GWh)") == "annual_output"
+def test_profiler_and_compiler_agree_on_field_identity():
+    """Both stages must file one measurement under one field.
+
+    Independent derivations would split a metric's coverage between the rows
+    the layout parser bound and the rows the model read, so neither half ever
+    reaches the completeness deterministic reduction requires.
+    """
+    for label in (
+        "Maximum depth (m)",
+        "Maximum depth: Blue Basin (m)",
+        "Annual throughput",
+    ):
+        assert metric_field(label) == field_id(label)
+
+
+def test_field_id_strips_record_specific_detail():
+    # The subject measured and the unit vary per record; the field must not.
+    assert field_id("Maximum depth: Blue Basin (m)") == "maximum_depth"
+    assert field_id("Maximum depth: Red Basin (m)") == "maximum_depth"
+    assert field_id("Maximum depth") == "maximum_depth"
+    assert field_id("Maximum depth (m)") == "maximum_depth"

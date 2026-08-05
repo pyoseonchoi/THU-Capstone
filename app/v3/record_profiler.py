@@ -28,7 +28,7 @@ from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.logging_config import get_logger
 from app.reduction.normalizer import parse_number
-from app.v3.compiler import all_mapping_records
+from app.v3.compiler import all_mapping_records, field_id
 from app.v3.models import CompiledDocument, CompiledRecord, NumberFact
 from app.v3.source_text import json_payload, normalize_source
 
@@ -50,15 +50,10 @@ _NUMBER_IN_TEXT_RE = re.compile(
 ProgressCallback = Callable[[str, int, int, int], None]
 
 
-def metric_field(metric: str) -> str:
-    """Reduce a document's own metric wording to a stable field identifier."""
-    text = normalize_source(metric)
-    # A metric written as "Highest point: Mount X" names the measurement before
-    # the colon; everything after it is record-specific detail.
-    text = text.split(":", 1)[0]
-    text = re.sub(r"\([^)]*\)", " ", text)
-    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
-    return text[:80]
+# The compiler owns field identity. Deriving it separately here would file the
+# model's wording for a measurement under a different field than the layout
+# parser used for the same measurement, splitting its coverage in half.
+metric_field = field_id
 
 
 def _quote_numbers(quote: str) -> list[float]:
