@@ -125,6 +125,33 @@ def _fact_marker(page_text: str) -> tuple[int, str, int] | None:
     return None
 
 
+_ENTITY_TITLE_TERMS = (
+    "park",
+    "station",
+    "observatory",
+    "laboratory",
+    "centre",
+    "center",
+    "institute",
+)
+
+
+def _is_shouted_or_listed(text: str) -> bool:
+    """Whether a line reads as a spotlight-box shout or a numbered list item.
+
+    Entity titles are conventionally set in title case; document-design
+    conventions instead set callout-box headers (species spotlights, country
+    index entries) in full capitals, and set itinerary/index rows with a
+    leading ordinal ("03 Trail No 9"). Both are typographic/structural
+    signals, not literal words tied to one document, so they generalize to
+    any similarly designed guide.
+    """
+    letters = [char for char in text if char.isalpha()]
+    if letters and all(char.isupper() for char in letters):
+        return True
+    return bool(re.match(r"^\d{1,3}\b", text))
+
+
 def _is_record_title(line: str) -> bool:
     text = _clean_line(line)
     folded = text.casefold()
@@ -134,26 +161,47 @@ def _is_record_title(line: str) -> bool:
         return False
     if folded in _TITLE_EXCLUSIONS or _is_fact_section_title(text):
         return False
-    return bool(_heading(line)) or any(
-        term in folded
-        for term in (
-            "park",
-            "station",
-            "observatory",
-            "laboratory",
-            "centre",
-            "center",
-            "institute",
-        )
-    )
+    if _is_shouted_or_listed(text):
+        return False
+    return bool(_heading(line)) or any(term in folded for term in _ENTITY_TITLE_TERMS)
 
 
-def _find_country(record_text: str) -> str:
-    explicit = re.search(
-        r"(?i)(?:^|\b)(?:\*\*|__)?country\s*:\s*"
-        r"(?P<country>[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*){0,4})",
-        record_text,
-    )
+def _looks_like_entity_title(text: str) -> bool:
+    """Whether a title candidate names an entity, versus a generic subsection.
+
+    Reuses the same category-level terms (park/station/observatory/...) that
+    the compiler already assumes for this document family, rather than any
+    literal name specific to one document.
+    """
+    return any(term in text.casefold() for term in _ENTITY_TITLE_TERMS)
+
+
+_EXPLICIT_COUNTRY_RE = re.compile(
+    r"(?:^|\b)(?:\*\*|__)?(?i:country)\s*:\s*"
+    r"(?P<country>[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*){0,4})"
+)
+
+
+def _scan_explicit_countries(pages: list) -> frozenset[str]:
+    """Learn this document's own country vocabulary from any explicit labels.
+
+    Documents outside the practice set's 30-country Europe list still name
+    their countries somewhere (usually a "Country: X" fact-card line). Reusing
+    those literal, document-provided names as extra candidates lets records
+    that omit the label (or use non-European countries) still resolve without
+    depending on the hardcoded alias table below.
+    """
+    text = "\n".join(page.text for page in pages)
+    found: set[str] = set()
+    for match in _EXPLICIT_COUNTRY_RE.finditer(text):
+        value = re.sub(r"[*_`#]", "", match.group("country")).strip(" .")
+        if value:
+            found.add(value)
+    return frozenset(found)
+
+
+def _find_country(record_text: str, known_countries: frozenset[str] = frozenset()) -> str:
+    explicit = _EXPLICIT_COUNTRY_RE.search(record_text)
     if explicit:
         value = re.sub(r"[*_`#]", "", explicit.group("country")).strip(" .")
         if value:
@@ -163,6 +211,9 @@ def _find_country(record_text: str) -> str:
         line = re.sub(r"\d+", "", _clean_line(raw_line))
         compact = re.sub(r"[^a-z]", "", line.casefold())
         for country in _COUNTRY_ALIASES:
+            if compact == re.sub(r"[^a-z]", "", country.casefold()):
+                return country
+        for country in known_countries:
             if compact == re.sub(r"[^a-z]", "", country.casefold()):
                 return country
 
@@ -182,6 +233,18 @@ def _find_country(record_text: str) -> str:
         if score:
             scores[country] = score
             positions[country] = min(country_positions)
+    for country in known_countries:
+        if country in scores:
+            continue
+        alias = country.casefold()
+        matches = list(re.finditer(rf"\b{re.escape(alias)}\b", folded))
+        if not matches:
+            continue
+        score = len(matches) * 2.0
+        if re.search(rf"\b{re.escape(alias)}(?:'s|s')\b", introduction):
+            score += 20.0
+        scores[country] = score
+        positions[country] = min(match.start() for match in matches)
     if not scores:
         return ""
     return max(scores, key=lambda name: (scores[name], -positions[name]))
@@ -449,6 +512,7 @@ def _inline_profile_matches(text: str) -> tuple[str, list[re.Match[str]]]:
 def _compile_inline_profiles(
     document_id: str,
     pages: list[DocumentPage],
+    known_countries: frozenset[str] = frozenset(),
 ) -> tuple[list[CompiledRecord], list[CompiledRecord], str, bool, dict[str, int]] | None:
     source = _paged_source(pages)
     label, matches = _inline_profile_matches(source)
@@ -467,7 +531,7 @@ def _compile_inline_profiles(
             record_id=record_id,
             ordinal=ordinal,
             title=title,
-            country=_find_country(text),
+            country=_find_country(text, known_countries),
             page_start=page_start,
             page_end=page_end,
             anchor_page=page_start,
@@ -533,6 +597,7 @@ def _segment_pages(
     *,
     prefix: str = "segment",
     target_characters: int = 14_000,
+    known_countries: frozenset[str] = frozenset(),
 ) -> list[CompiledRecord]:
     """Build exhaustive consecutive segments when no repeated structure exists."""
     del document_id
@@ -561,7 +626,7 @@ def _segment_pages(
             record_id=f"{prefix}-{ordinal:03d}",
             ordinal=ordinal,
             title=title[:120],
-            country=_find_country(text),
+            country=_find_country(text, known_countries),
             page_start=first.page_number,
             page_end=last.page_number,
             anchor_page=first.page_number,
@@ -586,15 +651,41 @@ def all_mapping_records(document: CompiledDocument) -> list[CompiledRecord]:
     return [*document.records, *document.supplementary_records]
 
 
+def _heading_frequencies(pages: list[DocumentPage]) -> Counter[str]:
+    """Count how often each title-candidate line recurs across the document.
+
+    A genuine entity title (e.g. a park name) appears once, at the start of
+    its own section. A recurring subsection label or fact-card row (e.g.
+    "Getting there", "Years that humans have been active in the park area")
+    appears once per entity -- dozens of times across the document. Counting
+    frequency up front lets title selection prefer the rare, entity-specific
+    line over the common, repeated one, without hardcoding a list of known
+    labels for this specific document.
+
+    This counts every line that `_is_record_title` would accept as a
+    candidate -- not only heading-formatted ones -- since `_title_for_anchor`
+    also falls back to non-heading lines that merely contain an entity
+    keyword (e.g. "park"), and those recur just as often as heading labels.
+    """
+    counts: Counter[str] = Counter()
+    for page in pages:
+        for line in page.text.splitlines():
+            if _is_record_title(line):
+                counts[_clean_line(line).casefold()] += 1
+    return counts
+
+
 def _title_for_anchor(
     pages: list[DocumentPage],
     anchor: int,
     previous_anchor: int | None,
+    heading_frequencies: Counter[str] | None = None,
 ) -> tuple[int, str] | None:
     page_by_number = {page.page_number: page for page in pages}
     marker = _fact_marker(page_by_number[anchor].text)
     marker_level = marker[2] if marker else 7
     start = max(pages[0].page_number, (previous_anchor or anchor - 8) + 1)
+    frequencies = heading_frequencies if heading_frequencies is not None else Counter()
     candidates: list[tuple[int, int, str]] = []
     fallbacks: list[tuple[int, int, str]] = []
     for page_number in range(start, anchor + 1):
@@ -607,7 +698,20 @@ def _title_for_anchor(
                 candidates.append((page_number, line_index, parsed[1]))
             elif _is_record_title(line):
                 fallbacks.append((page_number, line_index, _clean_line(line)))
-    selected = candidates[-1] if candidates else (fallbacks[-1] if fallbacks else None)
+
+    def rarest_first(pool: list[tuple[int, int, str]]) -> tuple[int, int, str] | None:
+        if not pool:
+            return None
+        return min(
+            enumerate(pool),
+            key=lambda item: (
+                0 if _looks_like_entity_title(item[1][2]) else 1,
+                frequencies.get(item[1][2].casefold(), 0),
+                -item[0],
+            ),
+        )[1]
+
+    selected = rarest_first(candidates) or rarest_first(fallbacks)
     if selected is None:
         return None
     return selected[0], selected[2]
@@ -645,7 +749,8 @@ def compile_document(
     """Compile a trusted repeated-entity registry or exhaustive fallback segments."""
     tables = compile_tables(pages)
     contents_text, contents_pages, contents_entries, contents_trusted = compile_contents(pages)
-    inline = _compile_inline_profiles(document_id, pages)
+    known_countries = _scan_explicit_countries(pages)
+    inline = _compile_inline_profiles(document_id, pages, known_countries)
     if inline is not None:
         records, supplementary, entity_label, trusted, signals = inline
         warnings = [] if trusted else [
@@ -679,7 +784,7 @@ def compile_document(
 
     anchors = _marker_pages(pages)
     if len(anchors) < 3:
-        records = _segment_pages(document_id, pages)
+        records = _segment_pages(document_id, pages, known_countries=known_countries)
         return CompiledDocument(
             document_id=document_id,
             compiler_version=COMPILER_VERSION,
@@ -711,11 +816,13 @@ def compile_document(
     page_by_number = {page.page_number: page for page in pages}
     warnings: list[str] = []
     titles: list[tuple[int, str]] = []
+    heading_frequencies = _heading_frequencies(pages)
     for index, anchor in enumerate(anchors):
         title = _title_for_anchor(
             pages,
             anchor,
             anchors[index - 1] if index else None,
+            heading_frequencies,
         )
         if title is None:
             title = (anchor, f"Record {index + 1}")
@@ -747,7 +854,7 @@ def compile_document(
             record_id=record_id,
             ordinal=index + 1,
             title=title,
-            country=_find_country(text),
+            country=_find_country(text, known_countries),
             page_start=title_page,
             page_end=page_end,
             anchor_page=anchor,
@@ -767,6 +874,7 @@ def compile_document(
         document_id,
         unassigned_pages,
         prefix="supplement",
+        known_countries=known_countries,
     )
     unique_titles = len({record.title.casefold() for record in records})
     toc_count = _toc_count(pages, titles[0][0])

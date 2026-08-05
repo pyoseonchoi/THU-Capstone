@@ -114,424 +114,6 @@ def _page_with(record: CompiledRecord, *terms: str) -> int:
     return record.page_start
 
 
-def _cross_border_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "international border" not in folded or not any(
-        term in folded for term in ("extend across", "paired across", "shared")
-    ):
-        return None
-
-    curonian = _record_with(document, "kaliningrad", "across the russian border")
-    wadden = _record_with(document, "countries sharing the wadden sea eco-region")
-    tatras = _record_with(document, "twinned with", "slovakian border")
-    if not curonian or not wadden or not tatras:
-        return None
-
-    curonian_quote = _sentence_with(curonian.text, "kaliningrad", "russian border")
-    length = re.search(
-        r"(\d+)\s+Length of.*?-\s*(\d+)\s+of which is in Lithuania",
-        curonian.text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    wadden_quote = _sentence_with(
-        wadden.text,
-        "Denmark's national park",
-        "Germany",
-        "Netherlands",
-    )
-    tatras_quote = _sentence_with(tatras.text, "twinned with", "Slovakian border")
-    year = re.search(r"Since\s+(\d{4})", tatras_quote, re.IGNORECASE)
-    if not curonian_quote or not length or not wadden_quote or not tatras_quote:
-        return None
-
-    answer = (
-        f"{curonian.title} crosses from Lithuania into Russia's Kaliningrad region; "
-        f"{length.group(2)} km of the {length.group(1)} km spit lie in Lithuania. "
-        f"{wadden.title} is a shared eco-region spanning Denmark, Germany and the "
-        "Netherlands. "
-        f"{tatras.title} in Poland has been formally twinned with Tatranský Národný "
-        f"Park across the Slovakian border{f' since {year.group(1)}' if year else ''}."
-    )
-    evidence = [curonian_quote, wadden_quote, tatras_quote]
-    pages = [
-        _page_with(curonian, "kaliningrad", "russian border"),
-        _page_with(wadden, "Denmark's national park", "Netherlands"),
-        _page_with(tatras, "twinned with", "Slovakian border"),
-    ]
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=evidence,
-        source_pages=sorted(set(pages)),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _threat_absence_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    required_terms = (
-        "poaching",
-        "wartime damage",
-        "glacier retreat",
-        "visitor numbers",
-    )
-    if not all(term in folded for term in required_terms):
-        return None
-    full_text = "\n".join(record.text for record in document.records)
-    if re.search(r"\bpoach(?:ing|ed|er|ers)?\b", full_text, re.IGNORECASE):
-        return None
-
-    jostedalsbreen = _record_with(document, "global warming", "shrink markedly")
-    cinque_terre = _record_with(document, "tourists began to trickle", "become a flood")
-    plitvice = _record_with(document, "embroiled in the 1990s conflict")
-    if not jostedalsbreen or not cinque_terre or not plitvice:
-        return None
-
-    glacier_quote = _sentence_with(jostedalsbreen.text, "global warming", "shrink markedly")
-    visitor_quote = _sentence_with(
-        cinque_terre.text,
-        "tourists began to trickle",
-        "become a flood",
-    )
-    wartime_quote = _sentence_with(plitvice.text, "embroiled in the 1990s conflict")
-    answer = (
-        "Poaching is the only one of the four threats never raised in the book. "
-        "The other three are explicitly discussed: Jostedalsbreen's glaciers are "
-        "shrinking markedly under global warming; at Cinque Terre, tourism grew from "
-        "a trickle into a flood so large that visitors now need tickets; and Plitvice "
-        "was embroiled in the 1990s conflict and placed on the World Heritage in "
-        "Danger list because of the risk of mines."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[glacier_quote, visitor_quote, wartime_quote],
-        source_pages=sorted(
-            {
-                _page_with(jostedalsbreen, "global warming", "shrink markedly"),
-                _page_with(cinque_terre, "tourists began to trickle", "become a flood"),
-                _page_with(plitvice, "embroiled in the 1990s conflict"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _designation_absence_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    required_terms = (
-        "natura 2000",
-        "world heritage",
-        "biosphere reserve",
-        "national nature reserve",
-    )
-    if not all(term in folded for term in required_terms):
-        return None
-
-    full_text = "\n".join(record.text for record in document.records)
-    if re.search(r"\bnatura\s+2000\b", full_text, re.IGNORECASE):
-        return None
-
-    world_heritage = _record_with(document, "world heritage list since 1980")
-    biosphere = _record_with(document, "unesco biosphere reserve status arrived")
-    nature_reserves = _record_with(document, "national nature reserves")
-    if not world_heritage or not biosphere or not nature_reserves:
-        return None
-
-    world_quote = _sentence_with(world_heritage.text, "world heritage list since 1980")
-    biosphere_quote = _sentence_with(biosphere.text, "unesco biosphere reserve status arrived")
-    reserve_quote = _sentence_with(nature_reserves.text, "national nature reserves")
-    if not world_quote or not biosphere_quote or not reserve_quote:
-        return None
-
-    answer = (
-        "Natura 2000 is the only one of the four designations never mentioned in "
-        "the book. Unesco World Heritage status appears for several parks, including "
-        "Durmitor, which has been on the World Heritage List since 1980. Unesco "
-        "biosphere reserve status also appears, for example at Retezat, and the "
-        "Slovenský Raj entry explicitly mentions 11 national nature reserves."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[world_quote, biosphere_quote, reserve_quote],
-        source_pages=sorted(
-            {
-                _page_with(world_heritage, "world heritage list since 1980"),
-                _page_with(biosphere, "unesco biosphere reserve status arrived"),
-                _page_with(nature_reserves, "national nature reserves"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _human_wilderness_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "human habitation" not in folded or "wilderness" not in folded:
-        return None
-
-    abisko = _record_with(document, "reindeer husbandry is still prevalent")
-    carpathians = _record_with(document, "hutsuls herd sheep in summer")
-    cinque_terre = _record_with(document, "drystone walls", "built by hand")
-    if not abisko or not carpathians or not cinque_terre:
-        return None
-
-    abisko_quote = _sentence_with(abisko.text, "reindeer husbandry is still prevalent")
-    hutsul_quote = _sentence_with(carpathians.text, "hutsuls herd sheep in summer")
-    terrace_quote = _sentence_with(cinque_terre.text, "drystone walls", "built by hand")
-    answer = (
-        "Taken as a whole, the book presents Europe's national parks as inhabited, "
-        "working landscapes rather than untouched wilderness. Traditional land use "
-        "is treated as part of the cultural and ecological heritage the parks protect, "
-        "not simply as a threat to exclude. At Abisko, Sámi communities still practise "
-        "seasonal reindeer husbandry; in the Carpathians, Hutsuls herd sheep on alpine "
-        "meadows and make cheese; and Cinque Terre's cultivated slopes are held by "
-        "thousands of kilometres of hand-built drystone walls. Across the entries, "
-        "wilderness descriptions repeatedly sit alongside villages, farms, terraces, "
-        "herders and other cultural sites."
-    )
-    pages = [
-        _page_with(abisko, "reindeer husbandry is still prevalent"),
-        _page_with(carpathians, "hutsuls herd sheep in summer"),
-        _page_with(cinque_terre, "drystone walls", "built by hand"),
-    ]
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[abisko_quote, hutsul_quote, terrace_quote],
-        source_pages=sorted(set(pages)),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _glaciation_synthesis_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "glaciation" not in folded or "across" not in folded:
-        return None
-
-    abisko = _record_with(document, "glaciers", "retreated from the valleys")
-    cairngorms = _record_with(document, "last ice age", "glaciers gouged deep valleys")
-    jostedalsbreen = _record_with(document, "global warming", "shrink markedly")
-    vatnajokull = next(
-        (record for record in document.records if "vatnaj" in record.title.casefold()),
-        None,
-    )
-    if not abisko or not cairngorms or not jostedalsbreen:
-        return None
-
-    answer = (
-        "Across the book, glaciation is a recurring landscape-making explanation: "
-        "the last ice age is used to explain valleys, lakes, corries, cirques, moraines "
-        "and other carved landforms. Abisko links its canyons and valley walls to "
-        "retreating glaciers, while the Cairngorms entry says glaciers gouged deep "
-        "valleys and corries through the bedrock. Living glacier parks such as "
-        f"Jostedalsbreen{f' and {vatnajokull.title}' if vatnajokull else ''} present the "
-        "same process as continuing in the present. The book also connects current "
-        "retreat to climate change: Jostedalsbreen's glaciers are described as shrinking "
-        "markedly under global warming."
-    )
-    evidence = [
-        _sentence_with(abisko.text, "retreated from the valleys"),
-        _sentence_with(cairngorms.text, "last ice age", "glaciers gouged deep valleys"),
-        _sentence_with(jostedalsbreen.text, "global warming", "shrink markedly"),
-    ]
-    pages = [
-        _page_with(abisko, "retreated from the valleys"),
-        _page_with(cairngorms, "glaciers gouged deep valleys"),
-        _page_with(jostedalsbreen, "global warming", "shrink markedly"),
-    ]
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=evidence,
-        source_pages=sorted(set(pages)),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _species_recovery_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "species conservation" not in folded and "threatened wildlife" not in folded:
-        return None
-
-    abruzzo = _record_with(document, "abruzzo chamois", "almost died out", "over 2000")
-    donana = _record_with(document, "iberian lynx", "world's most endangered")
-    saxon = _record_with(document, "salmon populations", "bounced back")
-    if not abruzzo or not donana or not saxon:
-        return None
-
-    chamois_quote = _sentence_with(abruzzo.text, "almost died out", "over 2000")
-    lynx_quote = _sentence_with(donana.text, "iberian lynx", "world's most endangered")
-    salmon_quote = _sentence_with(saxon.text, "salmon populations", "bounced back")
-    lynx_fact = next(
-        (fact for fact in donana.number_facts if "iberian_lynx" in fact.field),
-        None,
-    )
-    if not chamois_quote or not lynx_quote or not salmon_quote or not lynx_fact:
-        return None
-
-    answer = (
-        "The recurring conservation story is broadly optimistic recovery: species "
-        "are driven close to extinction or severe decline and then rebuild under "
-        "protection. The Abruzzo chamois had fallen to only a few dozen but now numbers "
-        "over 2,000. At Doñana, the Iberian lynx is described as the world's most "
-        f"endangered wild cat, with {lynx_fact.raw_value} counted in 2015. At Saxon "
-        "Switzerland, dams and poor water quality decimated Elbe salmon, but the "
-        "population bounced back. Together these before-and-after accounts present the "
-        "parks as conservation successes while acknowledging how close the species came "
-        "to being lost."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[chamois_quote, lynx_quote, salmon_quote, lynx_fact.quote],
-        source_pages=sorted(
-            {
-                _page_with(abruzzo, "almost died out", "over 2000"),
-                _page_with(donana, "iberian lynx", "world's most endangered"),
-                lynx_fact.page,
-                _page_with(saxon, "salmon populations", "bounced back"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _unesco_status_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "unesco" not in folded or not all(
-        term in folded for term in ("inscribed", "nominated", "tentative")
-    ):
-        return None
-
-    durmitor = _record_with(document, "world heritage list since 1980")
-    plitvice = _record_with(document, "world heritage list in 1979")
-    maddalena = _record_with(document, "tentative list of unesco world heritage sites")
-    skadar = _record_with(document, "formally nominated for unesco world heritage")
-    retezat = _record_with(document, "unesco biosphere reserve status arrived")
-    tatras = _record_with(document, "forming a unesco biosphere reserve")
-    if not all((durmitor, plitvice, maddalena, skadar, retezat, tatras)):
-        return None
-
-    tentative_fact = next(
-        (fact for fact in maddalena.number_facts if "tentative_list" in fact.field),
-        None,
-    )
-    if not tentative_fact:
-        return None
-    evidence = [
-        _sentence_with(durmitor.text, "world heritage list since 1980"),
-        _sentence_with(plitvice.text, "world heritage list in 1979"),
-        tentative_fact.quote,
-        _sentence_with(skadar.text, "formally nominated", "late 2011"),
-        _sentence_with(retezat.text, "biosphere reserve status arrived"),
-        _sentence_with(tatras.text, "forming a unesco biosphere reserve"),
-    ]
-    answer = (
-        "The entries described as actually inscribed on the Unesco World Heritage "
-        "List are Durmitor, since 1980, and Plitvice, since 1979. Arcipelago di La "
-        f"Maddalena was only on the tentative list from {tentative_fact.raw_value}, "
-        "while Lake Skadar was only formally nominated in late 2011. Retezat and the "
-        "Tatras are described as Unesco biosphere reserves, which is a different "
-        "designation and not World Heritage inscription."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=evidence,
-        source_pages=sorted(
-            {
-                _page_with(durmitor, "world heritage list since 1980"),
-                _page_with(plitvice, "world heritage list in 1979"),
-                tentative_fact.page,
-                _page_with(skadar, "formally nominated", "late 2011"),
-                _page_with(retezat, "biosphere reserve status arrived"),
-                _page_with(tatras, "forming a unesco biosphere reserve"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _climbing_firsts_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "climbing" not in folded or "first" not in folded:
-        return None
-
-    ecrins = _record_with(document, "barre des écrins", "25 june 1864")
-    snowdonia = _record_with(
-        document,
-        "peter bailey williams",
-        "william bingley",
-        "first recorded rock climb in britain",
-    )
-    if not ecrins or not snowdonia:
-        return None
-    summit_quote = _sentence_with(ecrins.text, "barre des écrins", "25 june 1864")
-    climb_quote = _sentence_with(
-        snowdonia.text,
-        "peter bailey williams",
-        "william bingley",
-        "1798",
-    )
-    location_quote = _sentence_with(snowdonia.text, "clogwyn du'r arddu")
-    if not summit_quote or not climb_quote or not location_quote:
-        return None
-    answer = (
-        "The two climbing firsts are the first ascent of Barre des Écrins in Écrins "
-        "National Park on 25 June 1864, completed by Edward Whymper, Horace Walker and "
-        "A. W. Moore; and Britain's first recorded rock climb, completed by Peter "
-        "Bailey Williams and William Bingley on Clogwyn Du'r Arddu in Snowdonia in "
-        "1798."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[summit_quote, climb_quote, location_quote],
-        source_pages=sorted(
-            {
-                _page_with(ecrins, "barre des écrins", "25 june 1864"),
-                _page_with(snowdonia, "peter bailey williams", "1798"),
-                _page_with(snowdonia, "clogwyn du'r arddu"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
 def _registry_is_trusted(document: CompiledDocument) -> bool:
     return document.record_kind == "repeated_entity" and (
         document.registry_trusted or not document.registry_signals
@@ -985,18 +567,8 @@ def _generic_claim_conflict(
         other, counter = selected
         comparison_quote = ""
         if explicit_comparison is not None:
-            explicit_record, explicit_fact, explicit_quote = explicit_comparison
-            is_conflict = (
-                _area_km2(explicit_fact) > _area_km2(own)
-                if field == "area"
-                else (
-                    explicit_fact.value > own.value
-                    if comparison == "greater"
-                    else explicit_fact.value < own.value
-                )
-            )
-            if is_conflict:
-                other, counter = explicit_record, explicit_fact
+            explicit_record, _explicit_fact, explicit_quote = explicit_comparison
+            if explicit_record.record_id == other.record_id:
                 comparison_quote = explicit_quote
         return ExecutionResult(
             question_id=plan.question_id,
@@ -1024,6 +596,8 @@ def _dated_first_comparison(
     plan: V3QuestionPlan,
     document: CompiledDocument,
 ) -> ExecutionResult | None:
+    if not _registry_is_trusted(document):
+        return None
     if not _operation(plan, OperationKind.DATE_DIFFERENCE):
         return None
     events: list[tuple[CompiledRecord, NumberFact, int, int, str]] = []
@@ -1076,6 +650,8 @@ def _generic_cross_border_relations(
     document: CompiledDocument,
 ) -> ExecutionResult | None:
     """Join three explicitly distinct cross-border relationship structures."""
+    if not _registry_is_trusted(document):
+        return None
     folded = plan.question.casefold()
     if not (
         "straddl" in folded
@@ -1157,6 +733,165 @@ def _generic_cross_border_relations(
             _page_with(shared_record, "shared transboundary", "spanning"),
             _page_with(paired_record, "formally paired", "across"),
         }),
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
+_INSCRIBED_RE = re.compile(
+    r"world heritage list\s+(?:since|in)\s+(\d{4})", re.IGNORECASE
+)
+_NOMINATED_TERM_RE = re.compile(r"nominated", re.IGNORECASE)
+_QUALIFIED_DATE_RE = re.compile(r"(?:early|mid|late)\s+\d{4}|\d{4}", re.IGNORECASE)
+_TENTATIVE_TERM = "tentative list"
+_BIOSPHERE_TERM = "biosphere reserve"
+
+
+def _generic_designation_status_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    """Classify every record's Unesco-style designation status generically.
+
+    Reuses the same status vocabulary (inscribed/tentative/nominated/
+    biosphere reserve) that `_designation_argmax_answer` already checks per
+    sentence, but classifies and lists every matching record instead of
+    picking a single maximum -- so it works for any document's own named
+    entities, without hardcoding which one holds which status.
+    """
+    folded = plan.question.casefold()
+    if not all(term in folded for term in ("inscribed", "nominated", "tentative")):
+        return None
+
+    Match = tuple[CompiledRecord, str, str]
+    inscribed: list[Match] = []
+    tentative: list[Match] = []
+    nominated: list[Match] = []
+    biosphere: list[Match] = []
+
+    for record in document.records:
+        for sentence in _sentences(record.text):
+            inscribed_match = _INSCRIBED_RE.search(sentence)
+            if inscribed_match:
+                inscribed.append((record, inscribed_match.group(1), sentence))
+                continue
+            if _TENTATIVE_TERM in sentence.casefold():
+                fact = next(
+                    (
+                        fact
+                        for fact in record.number_facts
+                        if "tentative" in fact.field
+                    ),
+                    None,
+                )
+                if fact:
+                    tentative.append((record, fact.raw_value, fact.quote))
+                    continue
+            nominated_term = _NOMINATED_TERM_RE.search(sentence)
+            if nominated_term:
+                dates = list(_QUALIFIED_DATE_RE.finditer(sentence))
+                closest = min(
+                    dates,
+                    key=lambda match: abs(match.start() - nominated_term.start()),
+                    default=None,
+                )
+                if closest:
+                    nominated.append((record, closest.group(0), sentence))
+                    continue
+            if _BIOSPHERE_TERM in sentence.casefold():
+                biosphere.append((record, "", sentence))
+
+    categories_present = sum(bool(group) for group in (inscribed, tentative, nominated))
+    if categories_present < 2 or not biosphere:
+        return None
+
+    inscribed_clause = "; ".join(
+        f"{record.title}, since {year}" for record, year, _ in inscribed
+    )
+    tentative_clause = "; ".join(
+        f"{record.title} was only on the tentative list from {year}"
+        for record, year, _ in tentative
+    )
+    nominated_clause = "; ".join(
+        f"{record.title} was only formally nominated in {date}"
+        for record, date, _ in nominated
+    )
+    biosphere_names = ", ".join(
+        dict.fromkeys(record.title for record, _, _ in biosphere)
+    )
+    answer = (
+        f"The entries described as actually inscribed on the Unesco World "
+        f"Heritage List are {inscribed_clause}. "
+        + (f"{tentative_clause}. " if tentative_clause else "")
+        + (f"{nominated_clause}. " if nominated_clause else "")
+        + f"{biosphere_names} are described as Unesco biosphere reserves, "
+        "which is a different designation and not World Heritage inscription."
+    )
+    all_matches = [*inscribed, *tentative, *nominated, *biosphere]
+    evidence = [sentence for _, _, sentence in all_matches]
+    pages = {record.page_start for record, _, _ in all_matches}
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=answer,
+        evidence=evidence,
+        source_pages=sorted(pages),
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
+_FIRST_EVENT_RE = re.compile(
+    r"first\s+(?:recorded\s+)?(?:ascent|rock climb|climb|summit|traverse|dive)",
+    re.IGNORECASE,
+)
+_EVENT_DATE_RE = re.compile(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}")
+
+
+def _generic_first_events_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    """List every recorded "first ascent/climb"-style event generically.
+
+    Reuses the same "first <event> ... <date>" extraction technique as
+    `_dated_first_comparison`, but collects and lists every matching record
+    instead of only comparing two against establishment year -- so it
+    surfaces whichever climbing/ascent firsts a document actually contains,
+    quoting the source sentence directly instead of hardcoding names or
+    summit titles for one specific document.
+    """
+    folded = plan.question.casefold()
+    if "first" not in folded or not any(
+        term in folded for term in ("climbing", "climb", "ascent")
+    ):
+        return None
+
+    events: list[tuple[CompiledRecord, str]] = []
+    for record in document.records:
+        sentences = _sentences(record.text)
+        for index, sentence in enumerate(sentences):
+            term_match = _FIRST_EVENT_RE.search(sentence)
+            if not term_match:
+                continue
+            dates = list(_EVENT_DATE_RE.finditer(sentence))
+            if not dates:
+                continue
+            # A named location or subject is often introduced in the sentence
+            # immediately before the "first ascent/climb" clause, so include
+            # it for fuller context rather than only the matching sentence.
+            context = f"{sentences[index - 1]} " if index > 0 else ""
+            events.append((record, f"{context}{sentence}"))
+
+    if len(events) < 2:
+        return None
+
+    details = " ".join(f"{record.title}: {sentence}" for record, sentence in events)
+    answer = f"The recorded climbing firsts are as follows. {details}"
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=answer,
+        evidence=[sentence for _, sentence in events],
+        source_pages=sorted({record.page_start for record, _ in events}),
         complete=True,
         strategy=plan.strategy,
     )
@@ -1358,6 +1093,8 @@ def _catalog_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Executi
 
 
 def _threshold_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
+    if not _registry_is_trusted(document):
+        return None
     folded = plan.question.casefold()
     comparison_terms = ("more", "above", "over", "at least", "or more")
     if "highest point" not in folded or not any(term in folded for term in comparison_terms):
@@ -1389,6 +1126,8 @@ def _threshold_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Execu
 
 
 def _superlative_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
+    if not _registry_is_trusted(document):
+        return None
     folded = plan.question.casefold()
     if "largest area" in folded or "covers the largest area" in folded:
         candidates = _facts(document, "area")
@@ -1478,6 +1217,8 @@ def _needle_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Executio
             strategy=plan.strategy,
         )
     if "oldest tree" in folded:
+        if not _registry_is_trusted(document):
+            return None
         candidates = _facts(document, "oldest_tree_age")
         if not candidates:
             return None
@@ -1511,6 +1252,8 @@ def _needle_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Executio
 
 
 def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
+    if not _registry_is_trusted(document):
+        return None
     folded = plan.question.casefold()
     if "different units" not in folded and "different unit" not in folded:
         return None
@@ -1541,6 +1284,8 @@ def _largest_claim_conflict(
     plan: V3QuestionPlan,
     document: CompiledDocument,
 ) -> ExecutionResult | None:
+    if not _registry_is_trusted(document):
+        return None
     folded = plan.question.casefold()
     if "largest in its country" not in folded:
         return None
@@ -1572,40 +1317,6 @@ def _largest_claim_conflict(
     return None
 
 
-def _rank_conflict(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "snowdon" not in folded or "rank" not in folded:
-        return None
-    snowdonia = next(
-        (record for record in document.records if "snowdonia" in record.title.casefold()),
-        None,
-    )
-    cairngorms = next(
-        (record for record in document.records if "cairngorms" in record.title.casefold()),
-        None,
-    )
-    if not snowdonia or not cairngorms:
-        return None
-    snowdon_claim = _sentence_with(snowdonia.text, "second-highest")
-    broader_claim = _sentence_with(cairngorms.text, "five of britain's six highest")
-    ben = next((fact for fact in cairngorms.number_facts if fact.field == "highest_point"), None)
-    height = re.search(r"At\s+(\d+)m,\s+Britain's second-highest", snowdon_claim)
-    if not snowdon_claim or not ben or not height:
-        return None
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=(
-            f"The Snowdonia entry calls Snowdon ({height.group(1)}m) Britain's second-highest "
-            f"peak. The Cairngorms entry gives {ben.subject} as {ben.value:g}m and says the "
-            "park contains five of Britain's six highest summits, so Snowdon cannot be second."
-        ),
-        evidence=[snowdon_claim, broader_claim, _fact_evidence(cairngorms, ben)],
-        source_pages=sorted({ben.page, snowdonia.page_start}),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
 def execute_structured(
     plan: V3QuestionPlan,
     document: CompiledDocument,
@@ -1619,21 +1330,14 @@ def execute_structured(
         _dated_first_comparison,
         _generic_cross_border_relations,
         _generic_needle_answer,
+        _generic_designation_status_answer,
+        _generic_first_events_answer,
         _composed_fact_answer,
         _threshold_answer,
         _superlative_answer,
         _needle_answer,
-        _designation_absence_answer,
-        _threat_absence_answer,
-        _cross_border_answer,
-        _human_wilderness_answer,
-        _glaciation_synthesis_answer,
-        _species_recovery_answer,
-        _unesco_status_answer,
-        _climbing_firsts_answer,
         _unit_outlier,
         _largest_claim_conflict,
-        _rank_conflict,
     ):
         result = executor(plan, document)
         if result is not None and result.complete:

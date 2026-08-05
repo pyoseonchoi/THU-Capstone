@@ -5,7 +5,10 @@ from __future__ import annotations
 from app.schemas import DocumentPage, QuestionRequest
 from app.v3.compiler import compile_document
 from app.v3.models import (
+    CompiledDocument,
+    CompiledRecord,
     EvidenceCandidate,
+    NumberFact,
     OperationKind,
     Strategy,
     V3MapResult,
@@ -328,3 +331,249 @@ def test_synthesis_reducer_drops_evidence_from_an_unrelated_process():
 
     assert [item.field for item in packet.evidence] == ["fire_management"]
     assert packet.warnings == ["Dropped 1 off-topic synthesis evidence items"]
+
+
+def test_country_learned_from_document_labels_when_a_record_omits_it():
+    """Country detection must not depend on the hardcoded European alias list.
+
+    One record explicitly labels its (fictional, non-European) country; a
+    second record only mentions that same country in prose, with no label at
+    all. The compiler should still resolve the second record's country by
+    reusing the name it already proved this document uses, not by matching
+    against the closed `_COUNTRY_ALIASES` table.
+    """
+    pages = [
+        DocumentPage(
+            page_number=1,
+            text=(
+                "# Field Guide\n## Contents\n"
+                "1. Kestrel Highland Reserve\n2. Marrow Delta Wetlands"
+            ),
+        ),
+        DocumentPage(
+            page_number=2,
+            text=(
+                "# Kestrel Highland Reserve\n"
+                "**Country: Valdoria.**\n\n"
+                "Kestrel protects a highland plateau in the north of the country."
+            ),
+        ),
+        DocumentPage(
+            page_number=3,
+            text="## Station in numbers\n\n100 Area monitored (sq km)\n\n## Notes",
+        ),
+        DocumentPage(
+            page_number=10,
+            text=(
+                "# Marrow Delta Wetlands\n"
+                "Marrow sits downstream in southern Valdoria and shares its "
+                "river system with Kestrel."
+            ),
+        ),
+        DocumentPage(
+            page_number=11,
+            text="## Station in numbers\n\n200 Area monitored (sq km)\n\n## Notes",
+        ),
+    ]
+
+    document = compile_document("reserves", pages)
+
+    assert [record.country for record in document.records] == [
+        "Valdoria",
+        "Valdoria",
+    ]
+
+
+def _designation_record(record_id, title, ordinal, text, number_facts=None):
+    return CompiledRecord(
+        record_id=record_id, ordinal=ordinal, title=title,
+        page_start=ordinal, page_end=ordinal, anchor_page=ordinal,
+        text=f"[Page {ordinal}]\n{title}\n{text}",
+        number_facts=number_facts or [],
+    )
+
+
+def test_generic_designation_status_answer_uses_no_practice_document_names():
+    """The Unesco-status classifier must work for entirely invented entities.
+
+    Uses fictional stations and a fictional heritage register -- none of the
+    real practice document's park or designation names -- to prove the
+    replacement for `_unesco_status_answer` generalizes by status vocabulary
+    (inscribed/tentative/nominated/biosphere reserve) rather than by
+    hardcoding which named entity holds which status.
+    """
+    records = [
+        _designation_record(
+            "s01", "Frostpeak Research Station", 1,
+            "Frostpeak has been on the Antarctic Heritage World Heritage List "
+            "since 1985.",
+        ),
+        _designation_record(
+            "s02", "Silverbrook Field Station", 2,
+            "Silverbrook entered the Antarctic Heritage World Heritage List "
+            "in 1991.",
+        ),
+        _designation_record(
+            "s03", "Windrift Outpost", 3,
+            "The outpost has been on the tentative list of Antarctic Heritage "
+            "World Heritage Sites.",
+            number_facts=[NumberFact(
+                record_id="s03", field="year_added_to_tentative_list",
+                label="Year added to the tentative list", value=2014,
+                raw_value="2014", page=3,
+                quote="2014 Year added to the tentative list",
+            )],
+        ),
+        _designation_record(
+            "s04", "Halcyon Bay Camp", 4,
+            "The camp was formally nominated for Antarctic Heritage World "
+            "Heritage status in early 2009.",
+        ),
+        _designation_record(
+            "s05", "Emberline Ridge Post", 5,
+            "Emberline Ridge holds biosphere reserve status.",
+        ),
+        _designation_record(
+            "s06", "Glasswater Depot", 6,
+            "Glasswater is also recognised with biosphere reserve status.",
+        ),
+    ]
+    document = CompiledDocument(
+        document_id="doc", record_kind="repeated_entity", records=records,
+    )
+    plan = V3QuestionPlan(
+        question_id="q1",
+        question=(
+            "Which stations are actually inscribed by Antarctic Heritage, and "
+            "which are only nominated or on a tentative list?"
+        ),
+        strategy=Strategy.HIERARCHICAL_SYNTHESIS,
+    )
+
+    result = execute_structured(plan, document)
+
+    assert result is not None
+    assert "Frostpeak Research Station, since 1985" in result.answer
+    assert "Silverbrook Field Station, since 1991" in result.answer
+    assert "tentative list from 2014" in result.answer
+    assert "formally nominated in early 2009" in result.answer
+    assert "biosphere reserves" in result.answer
+    assert "Emberline Ridge Post" in result.answer
+    assert "Glasswater Depot" in result.answer
+
+
+def test_generic_first_events_answer_uses_no_practice_document_names():
+    """The climbing-firsts lister must work for entirely invented entities.
+
+    Uses fictional peaks, climbers, and stations -- none of the real
+    practice document's names -- to prove `_generic_first_events_answer`
+    generalizes by sentence pattern ("first ascent/climb ... date") rather
+    than by hardcoding Barre des Écrins or Snowdonia. Also checks that a
+    location named in the sentence *before* the matching one still
+    surfaces, since real prose often splits the subject and the "first X"
+    claim across two sentences.
+    """
+    records = [
+        _designation_record(
+            "s01", "Cloudspire Research Station", 1,
+            "Three surveyors made the first ascent of Mount Ashgrave on "
+            "12 March 1902.",
+        ),
+        _designation_record(
+            "s02", "Thistledown Outpost", 2,
+            "The route follows the ridge above Hollow Tarn. Since 1911, "
+            "local guides have marked it as the first recorded climb in "
+            "the region.",
+        ),
+    ]
+    document = CompiledDocument(
+        document_id="doc", record_kind="repeated_entity", records=records,
+    )
+    plan = V3QuestionPlan(
+        question_id="q1",
+        question=(
+            "Two station entries each record a climbing first with a date. "
+            "What are the events and dates?"
+        ),
+        strategy=Strategy.HIERARCHICAL_SYNTHESIS,
+    )
+
+    result = execute_structured(plan, document)
+
+    assert result is not None
+    assert "Mount Ashgrave" in result.answer
+    assert "12 March 1902" in result.answer
+    assert "Hollow Tarn" in result.answer
+    assert "1911" in result.answer
+
+
+def test_claim_conflict_picks_true_maximum_over_first_worded_comparison():
+    """A peer with an explicit "compared with" sentence must not outrank a
+    larger, silently-reported peer.
+
+    Regression test for a bug found via a real generalization document: when
+    two peers both exceed the claimed figure, the executor was picking
+    whichever one happened to phrase its rebuttal in prose ("larger than
+    X"), even when a third peer's plain reported figure was larger still.
+    Uses fictional reservoirs so the fix is proven by pattern, not by
+    matching one specific document's wording.
+    """
+    claimant = CompiledRecord(
+        record_id="r01", ordinal=1, title="Hollowmere Reservoir", country="Kestria",
+        page_start=1, page_end=1, anchor_page=1,
+        text=(
+            "[Page 1]\nHollowmere Reservoir\n"
+            "Hollowmere Reservoir is described as Kestria's largest protected "
+            "reservoir landscape."
+        ),
+        number_facts=[NumberFact(
+            record_id="r01", field="area", label="Area", value=950,
+            raw_value="950 sq km", unit="sq km", page=1, quote="950 sq km",
+        )],
+    )
+    worded_peer = CompiledRecord(
+        record_id="r02", ordinal=2, title="Ashcombe Reservoir", country="Kestria",
+        page_start=2, page_end=2, anchor_page=2,
+        text=(
+            "[Page 2]\nAshcombe Reservoir\n"
+            "Ashcombe Reservoir is larger than Hollowmere, covering more ground."
+        ),
+        number_facts=[NumberFact(
+            record_id="r02", field="area", label="Area", value=1400,
+            raw_value="1,400 sq km", unit="sq km", page=2, quote="1,400 sq km",
+        )],
+    )
+    true_max_peer = CompiledRecord(
+        record_id="r03", ordinal=3, title="Brackenfen Reservoir", country="Kestria",
+        page_start=3, page_end=3, anchor_page=3,
+        text=(
+            "[Page 3]\nBrackenfen Reservoir\n"
+            "Brackenfen Reservoir is the newest addition to the Kestria basin "
+            "network."
+        ),
+        number_facts=[NumberFact(
+            record_id="r03", field="area", label="Area", value=7360,
+            raw_value="7,360 sq km", unit="sq km", page=3, quote="7,360 sq km",
+        )],
+    )
+    document = CompiledDocument(
+        document_id="doc", record_kind="repeated_entity",
+        records=[claimant, worded_peer, true_max_peer],
+    )
+    plan = V3QuestionPlan(
+        question_id="q1",
+        question=(
+            "The guide calls one Kestrian reservoir the country's largest, but "
+            "another profile reports a larger area. Which two are involved, and "
+            "what are their areas?"
+        ),
+        category="contradiction",
+        strategy=Strategy.HIERARCHICAL_SYNTHESIS,
+    )
+
+    result = execute_structured(plan, document)
+
+    assert result is not None
+    assert "Brackenfen Reservoir" in result.answer
+    assert "7,360 sq km" in result.answer
+    assert "Ashcombe Reservoir" not in result.answer
