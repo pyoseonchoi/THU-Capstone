@@ -1,0 +1,107 @@
+[
+  {
+    "category": "aggregation",
+    "id": "h01",
+    "question": "In Statistical Annex Table 1, how many ranked countries or territories fall into each Human Development Index group—very high, high, medium and low—and how many ranked entries are there in total?"
+  },
+  {
+    "category": "aggregation",
+    "id": "h02",
+    "question": "According to the Contents, how many items are listed under BOXES, how many under SPOTLIGHTS, and how many under TABLES? Include entries whose identifiers begin with S."
+  },
+  {
+    "category": "aggregation",
+    "id": "h03",
+    "question": "According to the Contents' FIGURES list, how many figures belong to the Overview and to each of Chapters 1–6, including figures whose identifiers begin with S? Give the total and identify the section with the most figures."
+  },
+  {
+    "category": "superlative",
+    "id": "h04",
+    "question": "Among the ranked entries in Statistical Annex Table 1, which country has the highest 2023 Human Development Index value, and what is that value?"
+  },
+  {
+    "category": "superlative",
+    "id": "h05",
+    "question": "Among the ranked entries in Statistical Annex Table 1, which country has the highest life expectancy at birth in 2023, and what is the reported value?"
+  },
+  {
+    "category": "superlative",
+    "id": "h06",
+    "question": "Among the ranked entries in Statistical Annex Table 1, which country has the highest 2023 gross national income per capita in 2021 PPP dollars, and what amount is reported?"
+  },
+  {
+    "category": "absence",
+    "id": "h07",
+    "question": "Of deepfakes, algorithmic management, care technologies and the metaverse, which subject is never mentioned anywhere in the report?"
+  },
+  {
+    "category": "absence",
+    "id": "h08",
+    "question": "Of people with disabilities, excessive screen time in early childhood, the UN Global Digital Compact and digital twins, which subject is never mentioned anywhere in the report?"
+  },
+  {
+    "category": "absence",
+    "id": "h09",
+    "question": "Of artificial intelligence audit protocols, social dialogue on algorithmic management, dangerous planetary change and universal basic income, which subject is never mentioned anywhere in the report?"
+  },
+  {
+    "category": "contradiction",
+    "id": "h10",
+    "question": "The Foreword says that human development progress has flatlined with no clear recovery, while the Overview says the global HDI is projected to reach a record high in 2024. State both claims and explain how the report reconciles this apparent contradiction."
+  },
+  {
+    "category": "contradiction",
+    "id": "h11",
+    "question": "The Overview describes current AI use as substantial for about one fifth of respondents, yet says roughly two thirds of respondents in low, medium and high HDI countries expect to use AI in education, health and work within one year. Why are these statements not contradictory, and what change is the report describing?"
+  },
+  {
+    "category": "contradiction",
+    "id": "h12",
+    "question": "Chapter 1 says that AI extends automation to some nonroutine tasks, but also argues that many technically automatable tasks still require human presence or evaluation. State the two positions and explain the conditions under which the report favours automation, human evaluation or human–AI complementarity."
+  },
+  {
+    "category": "cross_section",
+    "id": "h13",
+    "question": "Figure 1.8 says workers with lower skill and experience can benefit more from AI, while Figure 6.2 says men and people with more education report higher AI use for work. What inequality risk emerges when these two findings are considered together?"
+  },
+  {
+    "category": "cross_section",
+    "id": "h14",
+    "question": "Figure 5.5 says most large-scale AI models are developed by organizations in the United States, followed by China and the United Kingdom, while Figure 5.8 says India has the highest self-reported AI skills penetration. What distinction between AI production power and AI user capabilities does this comparison reveal?"
+  },
+  {
+    "category": "cross_section",
+    "id": "h15",
+    "question": "Chapter 4 reports major accessibility gaps for people with disabilities, including widespread failure to meet web accessibility guidelines. Chapter 6 promotes universal and meaningful connectivity. Taken together, why does the report imply that connectivity alone is insufficient for inclusive AI?"
+  },
+  {
+    "category": "global_synthesis",
+    "id": "h16",
+    "question": "Taking Chapters 1–6 together, how does the report develop the concept of human agency in relation to AI—from tasks and AI agents to life stages, social narratives, concentrated power and the complementarity economy?"
+  },
+  {
+    "category": "global_synthesis",
+    "id": "h17",
+    "question": "How does the report challenge techno-deterministic narratives about AI, and what recurring role does human choice play in its account of development outcomes?"
+  },
+  {
+    "category": "global_synthesis",
+    "id": "h18",
+    "question": "Across the report, how are inequalities linked across life stage, disability, gender, education, connectivity and the concentration of AI power? Summarize the report's recurring policy response."
+  },
+  {
+    "category": "needle",
+    "id": "h19",
+    "question": "What is the PDF ISBN printed in the report's copyright information?"
+  },
+  {
+    "category": "needle",
+    "id": "h20",
+    "question": "How were the report's cover and chapter images produced with AI, and what did the graphic designer do after prompting the system?"
+  },
+  {
+    "category": "needle",
+    "id": "h21",
+    "question": "By how many orders of magnitude does the report say the cost of computing declined during the classical programming age?"
+  }
+]

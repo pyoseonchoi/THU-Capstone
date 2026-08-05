@@ -1,0 +1,310 @@
+# Frozen answer key -- Human Development Report 2025 ("A Matter of Choice").
+# Built per Protocol 2 against hdr2025.txt and hdr2025_fullscan_questions.json.
+# Every key point and forbidden claim below was verified against the source
+# text (Statistical Annex Table 1, Contents, and body chapters) before being
+# written. Freeze this file and reuse it for all future scoring of this
+# document; do not regenerate per scoring run.
+
+- id: h01
+  category: aggregation
+  key_points:
+  - States 74 ranked entries in the very high human development group
+  - States 50 ranked entries in the high human development group
+  - States 43 ranked entries in the medium human development group
+  - States 26 ranked entries in the low human development group
+  - States 193 total ranked entries in Table 1
+  forbidden:
+  - Gives a total other than 193
+  - Includes the unranked "Other countries or territories" entries (Korea,
+    Democratic People's Rep. of; Monaco) in the ranked count
+  - Gives group counts that do not sum to 193
+- id: h02
+  category: aggregation
+  key_points:
+  - States 19 items listed under BOXES
+  - States 12 items listed under SPOTLIGHTS
+  - States 6 items listed under TABLES
+  - Notes that 3 of these entries have identifiers beginning with S (S1.2.1
+    and S3.1.1 among the boxes, S3.2.1 among the tables)
+  forbidden:
+  - Gives a BOXES count other than 19
+  - Gives a SPOTLIGHTS count other than 12
+  - Gives a TABLES count other than 6
+  - Excludes the S-prefixed entries from the counts (e.g. answering 17 boxes
+    or 5 tables)
+- id: h03
+  category: aggregation
+  key_points:
+  - States 67 total figures listed under FIGURES
+  - Gives the by-section breakdown Overview 8, Chapter 1 9, Chapter 2 4,
+    Chapter 3 19, Chapter 4 6, Chapter 5 9, Chapter 6 12
+  - Identifies Chapter 3 as the section with the most figures, at 19
+  - Notes that 8 of the figures have identifiers beginning with S
+  forbidden:
+  - Gives a total other than 67
+  - Names a section other than Chapter 3 as having the most figures
+  - Undercounts a chapter by excluding its S-prefixed figure (e.g. Chapter 1
+    as 8 rather than 9, or Chapter 6 as 11 rather than 12)
+- id: h04
+  category: superlative
+  key_points:
+  - Names Iceland as the ranked entry with the highest 2023 HDI value
+  - Gives the value as 0.972
+  - Notes Iceland is ranked 1
+  forbidden:
+  - Names Norway or Switzerland (tied at rank 2, HDI 0.970) as highest
+  - Gives an HDI value other than 0.972 for the top entry
+- id: h05
+  category: superlative
+  key_points:
+  - Names San Marino as the ranked entry with the highest reported 2023 life
+    expectancy at birth
+  - Gives the value as 85.7 years
+  - Notes San Marino's HDI rank is 29
+  forbidden:
+  - Names Hong Kong, China (SAR) (85.5 years) as highest
+  - Names Iceland or another very-high-HDI-group country on the assumption
+    that the highest-HDI country also has the highest life expectancy
+  - Gives a life expectancy figure other than 85.7 for the top entry
+- id: h06
+  category: superlative
+  key_points:
+  - Names Liechtenstein as the ranked entry with the highest reported 2023
+    GNI per capita (2021 PPP$)
+  - Gives the amount as 166,812
+  - Notes Liechtenstein's HDI rank is 17
+  forbidden:
+  - Names Norway (112,710), Singapore (111,239), or Qatar (105,353) as
+    highest
+  - Gives a GNI per capita figure other than 166,812 for the top entry
+- id: h07
+  category: absence
+  key_points:
+  - Identifies the metaverse as the subject never substantively discussed
+  - Notes it appears only once, inside a cited reference's title, not in the
+    report body
+  - Notes that deepfakes, algorithmic management, and care technologies are
+    each discussed substantively elsewhere in the report
+  forbidden:
+  - Names deepfakes, algorithmic management, or care technologies as the
+    missing subject
+  - Claims the metaverse is discussed in the body of the report
+- id: h08
+  category: absence
+  key_points:
+  - Identifies digital twins as the subject never mentioned anywhere in the
+    report
+  - Notes that people with disabilities is discussed at length (e.g. chapter
+    4)
+  - Notes that excessive screen time in early childhood is discussed (e.g.
+    figure 3.3)
+  - Notes that the UN Global Digital Compact is discussed (e.g. box 5.2)
+  forbidden:
+  - Names people with disabilities, excessive screen time in early childhood,
+    or the UN Global Digital Compact as the missing subject
+  - Claims digital twins are discussed anywhere in the report
+- id: h09
+  category: absence
+  key_points:
+  - Identifies universal basic income as the subject never mentioned anywhere
+    in the report
+  - Notes that artificial intelligence audit protocols are discussed (box 5.4)
+  - Notes that social dialogue on algorithmic management is discussed (e.g.
+    spotlight 6.3)
+  - Notes that dangerous planetary change is discussed (e.g. spotlight 6.1)
+  forbidden:
+  - Names AI audit protocols, social dialogue on algorithmic management, or
+    dangerous planetary change as the missing subject
+  - Claims universal basic income is discussed anywhere in the report
+- id: h10
+  category: contradiction
+  key_points:
+  - States the Foreword's claim that decades of human development progress,
+    reflected in the HDI, have flatlined with no clear recovery from the
+    Covid-19 pandemic and subsequent crises
+  - States the Overview's claim that the global HDI value is projected to
+    reach a record high in 2024
+  - Reconciles the two by noting the 2024 increase, while a record high,
+    would be the lowest since records began 35 years ago
+  - Notes the report quantifies this slowdown as a mean 2021-2024 change in
+    HDI value about 4.5 times lower than the 1990-2024 mean change
+  forbidden:
+  - Treats the two statements as an unresolved inconsistency rather than
+    explaining the reconciliation
+  - Claims the global HDI actually declined in 2024
+  - States a specific numeric 2024 global HDI value (e.g. "0.765") as if
+    explicitly given in prose; the source states only that a record high was
+    reached without stating its value as text (0.765 appears only as an axis
+    gridline in figure O.2, not as a reported data point)
+- id: h11
+  category: contradiction
+  key_points:
+  - States that AI use is already substantial for about one fifth (about 20
+    percent) of respondents
+  - States that about two-thirds of respondents in low, medium and high HDI
+    countries expect to use AI in education, health and work within one year
+  - Explains the two are not contradictory because one describes current use
+    and the other describes expected use one year out
+  - References figure O.1's actual-use figures (14.4% low/medium HDI, 23.6%
+    high HDI, 19.0% very high HDI) versus expected one-year use figures
+    (66.1%, 68.9%, 45.9% respectively)
+  forbidden:
+  - Treats both statistics as describing the same time period
+  - Claims the "two-thirds" figure describes current/past-month use rather
+    than one-year expected use
+  - Swaps or inverts the figure O.1 percentages between HDI groups
+- id: h12
+  category: contradiction
+  key_points:
+  - States that AI extends automation to some nonroutine tasks, beyond the
+    routine/nonroutine dichotomy useful in the classical programming era
+    (figure 1.7)
+  - States that many technically automatable tasks still require human
+    presence or evaluation, especially high-stakes tasks such as clinical
+    or legal decisions
+  - "Explains the report's reconciling framework: automation is favoured for
+    low-stakes tasks; human evaluation is required where AI errors carry high
+    stakes; human-AI complementarity is favoured where AI augments rather
+    than replaces human judgment"
+  forbidden:
+  - Claims the report treats automation and human evaluation as flatly
+    contradictory with no reconciling framework
+  - Claims stakes or the range of potential implications play no role in
+    when the report favours automation versus human evaluation
+- id: h13
+  category: cross_section
+  key_points:
+  - Cites figure 1.8's finding that workers with lower skill and experience
+    can benefit more from AI
+  - Cites figure 6.2's finding that men and people with more education report
+    higher AI use for work
+  - "Identifies the resulting inequality risk: the workers positioned to
+    benefit most from AI (lower-skilled, less-experienced) are not the ones
+    who actually report using it most, since usage skews toward more
+    educated, male workers"
+  forbidden:
+  - Claims the two figures show no tension or inequality risk
+  - Claims figure 6.2 shows lower-skilled or less-educated workers reporting
+    higher AI use (inverting its finding)
+- id: h14
+  category: cross_section
+  key_points:
+  - Cites figure 5.5's finding that most large-scale AI models are developed
+    by organizations based in the United States, followed by China and the
+    United Kingdom
+  - Cites figure 5.8's finding that India has the highest self-reported AI
+    skills penetration
+  - "Identifies the distinction: AI production power is concentrated in a
+    small set of countries (US, China, UK), while AI user/skills capability
+    is not concentrated in those same countries"
+  forbidden:
+  - Claims India also leads in large-scale AI model production
+  - Claims the United States, China, or the United Kingdom also lead in
+    self-reported AI skills penetration
+  - Conflates AI model production with AI skills penetration as the same
+    measure
+- id: h15
+  category: cross_section
+  key_points:
+  - Cites chapter 4's finding that about 95.9 percent of the top million
+    websites do not comply with the International Web Content Accessibility
+    Guidelines
+  - Cites chapter 4's finding that patents for assistive technology are
+    concentrated in a handful of countries
+  - Cites chapter 6's "universal and meaningful connectivity" framework
+    (quality, availability, affordability, security, devices, skills)
+  - Concludes connectivity alone is insufficient because it does not fix
+    inaccessible design and content, underrepresentation in AI training data,
+    or unequal access to assistive technology -- inclusion requires
+    deliberate accessibility choices beyond mere connection
+  forbidden:
+  - Claims the report treats connectivity as sufficient on its own for
+    inclusive AI
+  - Gives a web accessibility non-compliance figure other than approximately
+    95.9 percent
+- id: h16
+  category: global_synthesis
+  key_points:
+  - States the report frames human agency as central to human development,
+    with AI's impact determined by human choices in design and deployment
+    rather than by the technology itself
+  - Traces chapter 2's framing of AI shifting "from tools to agents" and "from
+    doing what we do to choosing what we choose"
+  - Traces chapter 3's people-centred, life-stage view of AI use
+  - Traces chapter 5's focus on concentrated power ("Power, influence and
+    choice in the Algorithmic Age")
+  - Traces chapter 6's proposal of a "complementarity economy" in which AI
+    augments rather than replaces human work
+  - Notes the recurring principle that decisions should be ceded to AI only
+    when doing so expands human agency and freedoms
+  forbidden:
+  - Claims the report treats human agency as inevitably eroded by AI with no
+    possibility of AI augmenting it
+  - Treats the chapters as unconnected topics rather than a developing
+    argument about agency
+- id: h17
+  category: global_synthesis
+  key_points:
+  - States the report explicitly names and challenges "techno-determinism,"
+    the assumption that technology alone shapes social outcomes
+  - States the report argues technology coevolves with, and is shaped by,
+    economic, social and political systems and institutions
+  - States human choice -- in design, deployment and governance -- is
+    presented as the recurring determinant of whether AI advances or harms
+    human development
+  forbidden:
+  - Claims the report endorses a techno-deterministic view of AI
+  - Claims the report presents AI's outcomes as fixed or inevitable
+    regardless of policy or institutional choices
+- id: h18
+  category: global_synthesis
+  key_points:
+  - States the report links inequalities across life stage, disability,
+    gender, education/skills, connectivity and AI power concentration as
+    mutually reinforcing rather than separate
+  - Cites the AI supply chain concentration finding that about 92 percent of
+    GPU revenue from data centres goes to NVIDIA as an example of
+    concentrated AI power
+  - Cites the web accessibility gap (about 95.9 percent of top websites
+    non-compliant) as an example of a disability-linked inequality
+  - States the report's recurring policy response combines expanding
+    universal and meaningful connectivity, building inclusive and adaptive
+    institutions and skills, and steering AI deployment through human choice
+    and governance
+  forbidden:
+  - Claims the report treats these inequalities (life stage, disability,
+    gender, education, connectivity, AI power) as unrelated to one another
+  - Misattributes the 87 percent "AI applications" concentration figure --
+    which the source ties specifically to ChatGPT -- as a general "Big Tech
+    platforms" figure
+  - Claims the report's policy response relies on a single lever (e.g.
+    connectivity alone) rather than a combination of connectivity, skills
+    and governance
+- id: h19
+  category: needle
+  key_points:
+  - Gives the PDF ISBN as 9789211542639
+  forbidden:
+  - Gives the Print ISBN (9789211576092) instead of the PDF ISBN
+  - Gives a different or garbled ISBN
+- id: h20
+  category: needle
+  key_points:
+  - States a graphic designer worked with AI, guiding the system with ideas
+    and creative direction and prompting it to produce a range of visual
+    outputs
+  - States the graphic designer then edited, developed and finalized those
+    outputs
+  forbidden:
+  - Claims the images were produced by AI alone with no human involvement
+  - Claims a human illustrator or photographer produced the cover art without
+    AI involvement
+- id: h21
+  category: needle
+  key_points:
+  - States the cost of computing declined by 12 orders of magnitude during
+    the classical programming age (figure 1.6)
+  forbidden:
+  - Gives a figure other than 12 orders of magnitude
+  - Attributes the decline to the AI/machine-learning age rather than the
+    classical programming age

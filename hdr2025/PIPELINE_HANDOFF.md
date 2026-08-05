@@ -429,6 +429,10 @@ original parks file, following the protocols in `md_files/`.
   Protocol 2 freezes an answer key **before** scoring; Protocol 3 forbids
   amending it retroactively.
 - Repo: `pyoseonchoi/THU-Capstone`. **Work on a branch, never on `main`.**
+  The document-agnostic line lives on **`model-yyk`** — that branch carries
+  `pipeline_g1.py`, `pipeline_ed2.py`, this handoff, the HDR question set and
+  the frozen answer key. `feature/hdr-pipeline` is the earlier fitted line
+  (`h1`, `h2`, `hdr_compile.py`) and is kept for reference only.
 
 ---
 
