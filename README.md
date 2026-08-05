@@ -19,13 +19,13 @@ PDF/TXT
        -> deterministic number/label binding for mixed fact-card layouts
        -> fields named by the document's own wording, one naming authority
        -> wording variants of one metric folded into a single field
-  -> per-record structured profiling (only when the registry has holes)
-       -> induced metric vocabulary, then one cheap call per record
-       -> every fact kept must be quoted verbatim from its own record
        -> flattened multi-page table reconstruction and ranked-row validation
        -> body-caption cross-validation for interleaved Contents lists
        -> consecutive fallback segments for arbitrary Markdown
        -> supplementary front/back-matter records
+  -> per-record structured profiling (only when the registry has holes)
+       -> induced metric vocabulary, then one cheap call per record
+       -> every fact kept must be quoted verbatim from its own record
   -> question routing against the discovered field list
        -> each question placed on the operation that answers it, by meaning
        -> arguments (field, groups, threshold, direction) bounded to the
