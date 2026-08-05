@@ -475,8 +475,9 @@ def test_structured_answers_include_comparison_and_outlier_value():
     assert visitor_result is None
     # Area is bound for every record, so the unit outlier stays deterministic.
     assert unit_result is not None
+    assert "Jotunheimen National Park" in unit_result.answer
     assert "1151 sq miles" in unit_result.answer
-    assert "other park cards use sq km" in unit_result.answer
+    assert "use sq km" in unit_result.answer
 
 
 def _theme_record(

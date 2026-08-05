@@ -10,8 +10,8 @@ from app.config import Settings
 from app.llm.base import BaseLLMClient, LLMResponse
 from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
-from app.v3.models import CompiledDocument, CompiledRecord
 from app.v3.compiler import field_id
+from app.v3.models import CompiledDocument, CompiledRecord
 from app.v3.record_profiler import RecordProfiler, metric_field
 
 
@@ -154,7 +154,7 @@ async def test_catalog_keeps_repeated_metrics_and_drops_one_offs(tmp_path):
     )
     await profiler.profile(document)
 
-    assert document.field_catalog == ["area"]
+    assert document.field_catalog == ["area_covered"]
     assert any(f.field == "dragons" for f in records[0].number_facts)
 
 

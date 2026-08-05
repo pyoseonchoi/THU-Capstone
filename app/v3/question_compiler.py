@@ -13,19 +13,6 @@ from app.v3.models import (
     V3QuestionPlan,
 )
 
-_FIELD_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("highest operating point", "operating elevation", "highest crest", "highest point", "highest summit", "highest peak", "max elevation"), "highest_point"),
-    (("annual visiting researchers", "annual number of visiting researchers", "visiting researchers per year", "annual visitors", "visitor figure", "number of visitors", "visitors per year"), "annual_visitors"),
-    (("annual generation", "annual output", "energy output", "power output", "gigawatt-hours"), "annual_output"),
-    (("area monitored", "monitored area", "project area", "largest area", "total area", "surface area", "covers"), "area"),
-    (("year established", "establishment year", "founding year", "date founded", "commissioned", "commissioning year"), "establishment_year"),
-    (("life expectancy",), "life_expectancy_2023"),
-    (("gross national income per capita", "gni per capita"), "gni_per_capita_2023"),
-    (("human development index value", "hdi value"), "hdi_2023"),
-    (("estimated age", "oldest tree", "age of"), "oldest_tree_age"),
-    (("first recorded eruption", "first eruption"), "first_recorded_eruption_year"),
-)
-
 _GENERIC_CAPITALIZED = {
     "According",
     "Across",
@@ -92,9 +79,6 @@ def _target_field(
     document: CompiledDocument | None = None,
 ) -> str:
     folded = question.casefold()
-    for terms, field in _FIELD_ALIASES:
-        if any(term in folded for term in terms):
-            return field
     if document is not None:
         scored: list[tuple[int, str]] = []
         question_terms = set(re.findall(r"[a-z0-9]+", folded))
@@ -106,6 +90,19 @@ def _target_field(
         if scored:
             return max(scored, key=lambda item: (item[0], len(item[1])))[1]
     return ""
+
+
+def _records_years(document: CompiledDocument | None, field: str) -> bool:
+    """Report whether a field's values read as calendar years."""
+    if document is None or not field:
+        return False
+    values = [
+        fact.value
+        for record in document.records
+        for fact in record.number_facts
+        if fact.field == field
+    ]
+    return bool(values) and all(1000 <= value <= 2100 for value in values)
 
 
 def _threshold(question: str) -> float | None:
@@ -226,8 +223,11 @@ def _operation_steps(
         if "name" in folded or "list" in folded:
             steps.append(OperationStep(kind=OperationKind.LIST, field=target))
     elif has_superlative and target:
+        # "Oldest" reverses on what is measured: the oldest thing has the
+        # smallest founding year but the largest age, so read it off the
+        # values rather than off the field's name.
         minimum = any(term in folded for term in ("lowest", "earliest")) or (
-            "oldest" in folded and target == "establishment_year"
+            "oldest" in folded and _records_years(document, target)
         )
         steps.append(OperationStep(
             kind=OperationKind.ARGMIN if minimum else OperationKind.ARGMAX,
@@ -329,11 +329,17 @@ def _structured_metadata(
 def compile_question(
     question: QuestionRequest,
     document: CompiledDocument | None = None,
+    bound_field: str = "",
 ) -> V3QuestionPlan:
-    """Compile a question into a validated strategy and operation sequence."""
+    """Compile a question into a validated strategy and operation sequence.
+
+    A caller that resolved the question against the document's own field list
+    passes the result as bound_field; it wins over wording-based matching,
+    which cannot tell a shared word from a shared meaning.
+    """
     category = _normalize_category(question.category)
     folded = question.question.casefold()
-    target = _target_field(question.question, document)
+    target = bound_field or _target_field(question.question, document)
     if not target and "ranked" in folded and "group" in folded:
         target = "rank"
     operations = _operation_steps(question.question, category, target, document)
@@ -390,5 +396,10 @@ def compile_question(
 def compile_questions(
     questions: list[QuestionRequest],
     document: CompiledDocument | None = None,
+    bindings: dict[str, str] | None = None,
 ) -> list[V3QuestionPlan]:
-    return [compile_question(question, document) for question in questions]
+    resolved = bindings or {}
+    return [
+        compile_question(question, document, resolved.get(question.question_id, ""))
+        for question in questions
+    ]

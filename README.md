@@ -17,9 +17,13 @@ PDF/TXT
        -> generic repeated-entity registry with integrity checks
        -> boilerplate-cycle chapter segmentation when fact anchors are lost
        -> deterministic number/label binding for mixed fact-card layouts
+       -> fields named by the document's own wording, one naming authority
+       -> wording variants of one metric folded into a single field
   -> per-record structured profiling (only when the registry has holes)
        -> induced metric vocabulary, then one cheap call per record
        -> every fact kept must be quoted verbatim from its own record
+  -> question-to-field binding against the discovered field list
+       -> matched by meaning, bounded to fields the document actually has
        -> flattened multi-page table reconstruction and ranked-row validation
        -> body-caption cross-validation for interleaved Contents lists
        -> consecutive fallback segments for arbitrary Markdown
@@ -69,6 +73,9 @@ no general verifier that can rewrite a count, maximum, or absence verdict.
   itself rather than by domain vocabulary.
 - Profiling is skipped entirely when the compiler already bound a fact card
   for every record, so well-parsed documents cost no extra tokens.
+- No field name, question phrasing, or subject vocabulary is written into the
+  code. Fields are named by the document, and a question reaches one only by
+  being matched against the fields that document actually reports.
 - Contents counts are trusted only when their identifiers are confirmed by
   source-literal body captions; ambiguous layouts use a bounded cached fallback.
 - Stored documents are automatically recompiled when the compiler contract changes.

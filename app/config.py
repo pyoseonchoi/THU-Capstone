@@ -65,6 +65,8 @@ class Settings(BaseSettings):
 
     # Per-record structured profiling. Deterministic reduction needs a fact
     # table the layout parser alone cannot fill on unfamiliar documents.
+    # Questions are matched to compiled fields by meaning, not by wording.
+    enable_field_binding: bool = True
     enable_record_profiling: bool = True
     profile_min_coverage: float = Field(default=0.3, ge=0.0, le=1.0)
     profile_vocabulary_sample: int = Field(default=6, ge=0, le=40)

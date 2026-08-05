@@ -13,6 +13,7 @@ from app.v3.models import (
     OperationKind,
     V3QuestionPlan,
 )
+from app.v3.question_compiler import _target_field
 
 _COUNTRY_NAMES = (
     "Albania",
@@ -55,6 +56,58 @@ def _facts(document: CompiledDocument, field: str) -> list[tuple[CompiledRecord,
         for fact in record.number_facts
         if fact.field == field
     ]
+
+
+def _metric_phrase(field: str, fact: NumberFact) -> str:
+    """Name a measurement the way the document names it.
+
+    The label carries the document's own wording, minus the part naming what
+    was measured in this record and the parenthetical unit, so one record's
+    subject never leaks into a sentence about the whole registry.
+    """
+    label = re.sub(r"\([^)]*\)", "", (fact.label or "").split(":", 1)[0]).strip()
+    phrase = (label or field.replace("_", " ")).casefold()
+    # A label may already carry the superlative the sentence is about to add,
+    # which would read "the highest highest crest".
+    return re.sub(
+        r"^(?:highest|lowest|largest|smallest|greatest|maximum|minimum|max|min)\s+",
+        "",
+        phrase,
+    )
+
+
+def _year_field(document: CompiledDocument) -> str:
+    """Return the field whose values the document states as calendar years.
+
+    Which field records a founding date is a property of the values, not of
+    what the document happens to call the column.
+    """
+    coverage: dict[str, list[float]] = {}
+    for record in document.records:
+        for fact in record.number_facts:
+            coverage.setdefault(fact.field, []).append(fact.value)
+    yearly = [
+        (field, values)
+        for field, values in coverage.items()
+        if values and all(1000 <= value <= 2100 for value in values)
+    ]
+    if not yearly:
+        return ""
+    return max(yearly, key=lambda item: (len(item[1]), item[0]))[0]
+
+
+def _extreme_word(argmin: bool, candidates: list[tuple[CompiledRecord, NumberFact]]) -> str:
+    """Say which end of the range was taken, in terms that fit the values."""
+    values = [fact.value for _, fact in candidates]
+    if values and all(1000 <= value <= 2100 for value in values):
+        return "earliest" if argmin else "latest"
+    return "lowest" if argmin else "highest"
+
+
+def _has_mixed_area_units(candidates: list[tuple[CompiledRecord, NumberFact]]) -> bool:
+    """Report whether the rows state areas in more than one unit."""
+    units = {fact.unit.casefold() for _, fact in candidates if fact.unit}
+    return len(units) > 1 and any("sq" in unit for unit in units)
 
 
 def _complete_facts(
@@ -381,36 +434,17 @@ def _composed_fact_answer(
     if argmax_step or argmin_step:
         value_key = (
             (lambda pair: _area_km2(pair[1]))
-            if target == "area"
+            if _has_mixed_area_units(candidates)
             else (lambda pair: pair[1].value)
         )
         selector = min if argmin_step else max
         record, fact = selector(candidates, key=value_key)
-        if target == "area":
-            answer = (
-                f"{record.title} has the largest monitored area: "
-                f"{fact.raw_value} {fact.unit}."
-            )
-        elif target == "annual_visitors":
-            answer = (
-                f"{record.title} reports the largest annual figure: "
-                f"{_format_number(fact.value)} visiting researchers per year."
-            )
-        elif target == "highest_point":
-            answer = (
-                f"{record.title} reports the highest operating point: "
-                f"{_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''}."
-            )
-        elif target == "annual_output":
-            answer = (
-                f"{record.title} reports the greatest annual output: "
-                f"{_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''}."
-            )
-        else:
-            answer = (
-                f"{record.title} has the maximum reported value: "
-                f"{_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''}."
-            )
+        extreme = _extreme_word(bool(argmin_step), candidates)
+        answer = (
+            f"{record.title} reports the {extreme} {_metric_phrase(target, fact)}: "
+            f"{fact.raw_value or _format_number(fact.value)}"
+            f"{f' {fact.unit}' if fact.unit else ''}."
+        )
         return ExecutionResult(
             question_id=plan.question_id,
             answer=answer,
@@ -546,12 +580,20 @@ def _generic_claim_conflict(
         folded_claim = claim.casefold()
         if requested_claim and requested_claim not in folded_claim:
             continue
-        if "highest" in folded_claim:
-            field, comparison = "highest_point", "greater"
-        elif "largest" in folded_claim:
-            field, comparison = "area", "greater"
-        else:
-            field, comparison = "establishment_year", "earlier"
+        # The measurement is whichever the question was bound to; when the
+        # question names none, the claim itself says what it boasts about, so
+        # match its wording against the document's own fields.
+        field = plan.target_fields[0] if plan.target_fields else _target_field(claim, document)
+        comparison = (
+            "earlier"
+            if any(
+                term in folded_claim
+                for term in ("oldest", "earliest", "first", "lowest", "smallest", "least")
+            )
+            else "greater"
+        )
+        if not field:
+            continue
         own = next((fact for fact in record.number_facts if fact.field == field), None)
         if own is None:
             continue
@@ -578,7 +620,7 @@ def _generic_claim_conflict(
             if sentence:
                 explicit_comparison = (other, fact, sentence)
                 break
-        if field == "area":
+        if _has_mixed_area_units(peers + [(record, own)]):
             conflicts = [pair for pair in peers if _area_km2(pair[1]) > _area_km2(own)]
             selected = max(conflicts, key=lambda pair: _area_km2(pair[1])) if conflicts else None
         elif comparison == "greater":
@@ -595,7 +637,7 @@ def _generic_claim_conflict(
             explicit_record, explicit_fact, explicit_quote = explicit_comparison
             is_conflict = (
                 _area_km2(explicit_fact) > _area_km2(own)
-                if field == "area"
+                if _has_mixed_area_units(peers + [(record, own)])
                 else (
                     explicit_fact.value > own.value
                     if comparison == "greater"
@@ -633,10 +675,13 @@ def _dated_first_comparison(
 ) -> ExecutionResult | None:
     if not _operation(plan, OperationKind.DATE_DIFFERENCE):
         return None
+    founding_field = _year_field(document)
+    if not founding_field:
+        return None
     events: list[tuple[CompiledRecord, NumberFact, int, int, str]] = []
     for record in document.records:
         established = next(
-            (fact for fact in record.number_facts if fact.field == "establishment_year"),
+            (fact for fact in record.number_facts if fact.field == founding_field),
             None,
         )
         if established is None:
@@ -964,121 +1009,37 @@ def _catalog_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Executi
     return None
 
 
-def _threshold_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    comparison_terms = ("more", "above", "over", "at least", "or more")
-    if "highest point" not in folded or not any(term in folded for term in comparison_terms):
-        return None
-    match = re.search(r"(\d[\d,]*)\s*met", folded)
-    if not match:
-        return None
-    candidates = _complete_facts(document, "highest_point")
-    if candidates is None:
-        return None
-    threshold = float(match.group(1).replace(",", ""))
-    selected = [(record, fact) for record, fact in candidates if fact.value >= threshold]
-    selected.sort(key=lambda pair: pair[1].value, reverse=True)
-    details = ", ".join(
-        f"{record.title} ({fact.subject or 'highest point'}, {fact.value:g}m)"
-        for record, fact in selected
-    )
-    noun = document.entity_label or "entity"
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=(
-            f"{len(selected)} {noun}{'' if len(selected) == 1 else 's'} report a highest "
-            f"point of at least {threshold:g}m: {details}."
-        ),
-        evidence=[_fact_evidence(record, fact) for record, fact in selected],
-        source_pages=[fact.page for _, fact in selected],
-        complete=bool(selected),
-        strategy=plan.strategy,
-    )
-
-
-def _superlative_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "largest area" in folded or "covers the largest area" in folded:
-        candidates = _complete_facts(document, "area")
-        if candidates is None:
-            return None
-        record, fact = max(candidates, key=lambda pair: _area_km2(pair[1]))
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"{record.title} is the largest, covering {fact.raw_value} "
-                f"{fact.unit} in {record.country}."
-            ),
-            evidence=[_fact_evidence(record, fact)],
-            source_pages=[fact.page],
-            complete=True,
-            strategy=plan.strategy,
-        )
-    if "highest summit" in folded or ("highest point" in folded and "across every" in folded):
-        candidates = _complete_facts(document, "highest_point")
-        if candidates is None:
-            return None
-        record, fact = max(candidates, key=lambda pair: pair[1].value)
-        location = f", {record.country}" if record.country else ""
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"The highest is {fact.subject} at {fact.value:g}m in {record.title}{location}."
-            ),
-            evidence=[_fact_evidence(record, fact)],
-            source_pages=[fact.page],
-            complete=bool(fact.subject),
-            strategy=plan.strategy,
-        )
-    if "largest number of visitors" in folded or "most visitors" in folded:
-        candidates = _complete_facts(document, "annual_visitors")
-        if candidates is None:
-            return None
-        ordered = sorted(candidates, key=lambda pair: pair[1].value, reverse=True)
-        record, fact = ordered[0]
-        comparison = ""
-        if len(ordered) > 1:
-            examples = ", ".join(
-                f"{other.title} reports {_format_number(other_fact.value)}"
-                for other, other_fact in ordered[1:3]
-            )
-            comparison = (
-                " This is larger than every other annual visitor figure in the "
-                f"book; for comparison, {examples}."
-            )
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"{record.title} reports the most visitors: "
-                f"{_format_number(fact.value)} per year.{comparison}"
-            ),
-            evidence=[_fact_evidence(other, other_fact) for other, other_fact in ordered[:3]],
-            source_pages=[other_fact.page for _, other_fact in ordered[:3]],
-            complete=True,
-            strategy=plan.strategy,
-        )
-    return None
-
-
 def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
     folded = plan.question.casefold()
     if "different units" not in folded and "different unit" not in folded:
         return None
-    candidates = _facts(document, "area")
-    counts = Counter(fact.unit for _, fact in candidates if fact.unit)
-    if len(counts) < 2:
-        return None
-    common = counts.most_common(1)[0][0]
-    outliers = [(record, fact) for record, fact in candidates if fact.unit and fact.unit != common]
-    if len(outliers) != 1:
+    # The question does not say which measurement disagrees, so look for the
+    # field whose rows state one unit everywhere except in a single record.
+    target = plan.target_fields[0] if plan.target_fields else ""
+    fields = [target] if target else sorted(
+        {fact.field for record in document.records for fact in record.number_facts}
+    )
+    for field in fields:
+        candidates = _facts(document, field)
+        counts = Counter(fact.unit for _, fact in candidates if fact.unit)
+        if len(counts) < 2:
+            continue
+        common = counts.most_common(1)[0][0]
+        outliers = [
+            (record, fact) for record, fact in candidates if fact.unit and fact.unit != common
+        ]
+        if len(outliers) == 1:
+            break
+    else:
         return None
     record, fact = outliers[0]
+    noun = document.entity_label or "record"
     return ExecutionResult(
         question_id=plan.question_id,
         answer=(
-            f"{record.title} is the exception: its area is reported as "
-            f"{fact.raw_value} {fact.unit}; "
-            f"the other park cards use {common}."
+            f"{record.title} is the exception: its {_metric_phrase(field, fact)} is "
+            f"reported as {fact.raw_value} {fact.unit}; "
+            f"the other {noun} cards use {common}."
         ),
         evidence=[_fact_evidence(record, fact)],
         source_pages=[fact.page],
@@ -1136,8 +1097,6 @@ def execute_structured(
         _generic_cross_border_relations,
         _generic_needle_answer,
         _composed_fact_answer,
-        _threshold_answer,
-        _superlative_answer,
         _unit_outlier,
         _largest_claim_conflict,
     ):

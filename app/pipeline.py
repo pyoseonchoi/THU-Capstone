@@ -41,6 +41,7 @@ from app.submission import IncrementalSubmissionWriter
 from app.v3.answerer import V3Answerer
 from app.v3.compiler import COMPILER_VERSION, all_mapping_records, compile_document
 from app.v3.exhaustive_mapper import ExhaustiveMapper
+from app.v3.field_binder import FieldBinder
 from app.v3.models import (
     CompiledDocument,
     CompiledRecord,
@@ -85,6 +86,7 @@ class FullScanPipeline:
         self._answerer = V3Answerer(self._router, self._tracker)
         self._augmenter = StructureAugmenter(self._router, self._tracker, settings)
         self._profiler = RecordProfiler(self._router, self._tracker, settings)
+        self._binder = FieldBinder(self._router, self._tracker, settings)
         self._store = RunStore(settings)
 
     async def process_document(
@@ -216,6 +218,7 @@ class FullScanPipeline:
             self._settings,
         )
         self._profiler = RecordProfiler(self._router, self._tracker, self._settings)
+        self._binder = FieldBinder(self._router, self._tracker, self._settings)
         started = time.perf_counter()
         run = PipelineRun(
             document_id=document_id,
@@ -238,7 +241,8 @@ class FullScanPipeline:
 
         records = all_mapping_records(compiled)
         expected_record_ids = {record.record_id for record in records}
-        plans = compile_questions(questions, compiled)
+        bindings = await self._binder.bind(questions, compiled)
+        plans = compile_questions(questions, compiled, bindings)
         deterministic: dict[str, ExecutionResult] = {}
         unresolved: list[V3QuestionPlan] = []
         if progress_callback:

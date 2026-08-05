@@ -223,49 +223,6 @@ def field_id(label: str) -> str:
     that deterministic reduction requires.
     """
     folded = html.unescape(label).casefold()
-    if any(
-        term in folded
-        for term in (
-            "area covered",
-            "area monitored",
-            "monitored area",
-            "monitored reservoir",
-            "project area",
-        )
-    ):
-        return "area"
-    if any(
-        term in folded
-        for term in (
-            "highest point",
-            "highest peak",
-            "highest crest",
-            "highest operating point",
-            "operating elevation",
-        )
-    ):
-        return "highest_point"
-    if (
-        ("visitor" in folded or "visiting researcher" in folded)
-        and ("annual" in folded or "per year" in folded)
-    ):
-        return "annual_visitors"
-    if (
-        ("generation" in folded or "output" in folded or "pumping-equivalent" in folded)
-        and ("annual" in folded or "gigawatt" in folded)
-    ):
-        return "annual_output"
-    if (
-        "year established" in folded
-        or folded.startswith("established")
-        or folded.startswith("commissioned")
-        or "commissioning year" in folded
-    ):
-        return "establishment_year"
-    if "estimated age" in folded and ("tree" in folded or "cedar" in folded):
-        return "oldest_tree_age"
-    if "first recorded eruption" in folded:
-        return "first_recorded_eruption_year"
     # A label names the measurement before any colon; what follows is the
     # specific thing measured, and a parenthetical carries the unit. Neither
     # belongs to the field's identity, or "Highest point: Mount A" and

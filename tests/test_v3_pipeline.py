@@ -128,7 +128,10 @@ async def test_structured_question_uses_no_llm_calls(tmp_path):
 
     assert "Beta National Park" in run.answers[0].final_answer
     assert "300" in run.answers[0].final_answer
-    assert fake.stages == []
+    # Matching the question to a compiled field is the one model call a
+    # deterministic answer costs; the reduction itself stays in Python, with
+    # no per-record mapping and no answer synthesis.
+    assert fake.stages == ["planner"]
     await pipeline.close()
 
 

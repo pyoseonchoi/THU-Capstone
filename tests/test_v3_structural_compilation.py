@@ -82,9 +82,9 @@ def test_inline_profiles_compile_complete_schema_and_non_profile_needles():
     assert document.registry_signals["missing_ordinals"] == 0
     assert document.field_catalog == [
         "annual_output",
-        "area",
-        "establishment_year",
-        "highest_point",
+        "commissioned",
+        "highest_crest_or_operating_point",
+        "monitored_project_area",
     ]
 
     questions = [

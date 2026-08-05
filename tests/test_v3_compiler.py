@@ -35,7 +35,7 @@ First recorded eruption (BC)
     by_field = {fact.field: fact for fact in facts}
 
     assert by_field["annual_visitors"].value == 15_000_000
-    assert by_field["first_recorded_eruption_year"].value == -475
+    assert by_field["first_recorded_eruption"].value == -475
 
 
 def test_generic_compiler_preserves_every_nonconsecutive_page():
