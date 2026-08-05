@@ -194,6 +194,28 @@ def _page_with(record: CompiledRecord, *terms: str) -> int:
 
 
 
+def _source_table(plan: V3QuestionPlan, document: CompiledDocument):
+    """Return the compiled table a question is asking about.
+
+    A question may say which table it means. Where it does not, the field it
+    was bound to does: a column belonging to exactly one trusted table names
+    that table as surely as its number would, and a column shared by several
+    names none of them.
+    """
+    trusted = [table for table in document.tables if table.trusted and table.rows]
+    number = plan.metadata.get("source_table_number")
+    if number is not None:
+        return next(
+            (table for table in trusted if table.number == int(number)),
+            None,
+        )
+    target = plan.target_fields[0] if plan.target_fields else ""
+    if not target:
+        return None
+    holders = [table for table in trusted if target in table.columns]
+    return holders[0] if len(holders) == 1 else None
+
+
 def _registry_is_trusted(document: CompiledDocument) -> bool:
     return document.record_kind == "repeated_entity" and (
         document.registry_trusted or not document.registry_signals
@@ -251,13 +273,7 @@ def _table_answer(
     document: CompiledDocument,
 ) -> ExecutionResult | None:
     """Execute grouped counts and extrema over a trusted compiled table."""
-    number = plan.metadata.get("source_table_number")
-    if number is None:
-        return None
-    table = next(
-        (item for item in document.tables if item.number == int(number) and item.trusted),
-        None,
-    )
+    table = _source_table(plan, document)
     if table is None or not table.rows:
         return None
 
@@ -287,43 +303,78 @@ def _table_answer(
     extrema = _operation(plan, OperationKind.ARGMAX) or _operation(plan, OperationKind.ARGMIN)
     if not target or extrema is None or target not in table.columns:
         return None
-    eligible = [row for row in table.rows if row.rank is not None]
-    if not eligible or any(target not in row.values for row in eligible):
-        return None
+    eligible = _comparable_rows(table, target)
     candidates = [
-        (row, row.values[target])
+        (row, float(row.values[target]))
         for row in eligible
         if isinstance(row.values.get(target), (int, float))
     ]
-    if not candidates:
+    if len(candidates) < 2:
         return None
     selector = min if extrema.kind == OperationKind.ARGMIN else max
-    row, raw_value = selector(candidates, key=lambda item: float(item[1]))
-    value = float(raw_value)
-    if target == "hdi_2023":
-        rendered = f"{value:.3f}"
-        label = "2023 Human Development Index"
-    elif target == "life_expectancy_2023":
-        rendered = f"{value:.1f} years"
-        label = "2023 life expectancy at birth"
-    elif target == "gni_per_capita_2023":
-        rendered = f"${value:,.0f} (2021 PPP)"
-        label = "2023 gross national income per capita"
-    else:
-        rendered = _format_number(value)
-        label = target.replace("_", " ")
+    row, value = selector(candidates, key=lambda item: item[1])
     direction = "lowest" if extrema.kind == OperationKind.ARGMIN else "highest"
+    label = target.replace("_", " ")
+    placing = f", ranked {row.rank}," if row.rank is not None else ""
+    ordered = sorted(candidates, key=lambda item: item[1], reverse=direction == "highest")
+    column = [item for _, item in candidates]
+    runners = ", ".join(
+        f"{other.label} at {_render_cell(other_value, column)}"
+        for other, other_value in ordered[1:3]
+    )
+    comparison = f" The next are {runners}." if runners else ""
+    where = f"Table {table.number}" if table.number is not None else table.title[:40]
     return ExecutionResult(
         question_id=plan.question_id,
         answer=(
-            f"Among the ranked entries, {row.label} has the {direction} {label}: "
-            f"{rendered}."
+            f"{row.label}{placing} has the {direction} {label} in {where}: "
+            f"{_render_cell(value, column)}.{comparison}"
         ),
-        evidence=[row.quote],
-        source_pages=[row.page],
+        evidence=[other.quote for other, _ in ordered[:3]],
+        source_pages=sorted({other.page for other, _ in ordered[:3]}),
         complete=True,
         strategy=plan.strategy,
     )
+
+
+def _render_cell(value: float, column: list[float] = ()) -> str:
+    """Write a table value at the precision its own column was printed in.
+
+    A column of life expectancies reads 84.0 rather than 84, and one of
+    incomes reads 166,812 rather than 166812.0. Deciding per value would
+    print the same column two ways, so the decimals come from the column.
+    """
+    places = max(
+        (len(f"{other:.10f}".rstrip("0").split(".")[1]) for other in column),
+        default=0,
+    )
+    places = min(places, 3)
+    return f"{value:,.{places}f}"
+
+
+def _comparable_rows(table, column: str) -> list:
+    """Return the rows of a table that describe one entry each.
+
+    A table mixes entries with the lines that summarise them. Where it ranks
+    its entries, the unranked lines are those summaries. Where it ranks
+    nothing, a line whose value accounts for all the others is the total, and
+    comparing entries against their own total would always return the total.
+    """
+    ranked = [row for row in table.rows if row.rank is not None]
+    rows = ranked or list(table.rows)
+    values = [
+        (row, float(row.values[column]))
+        for row in rows
+        if isinstance(row.values.get(column), (int, float))
+    ]
+    if len(values) < 3:
+        return [row for row, _ in values]
+    total = sum(value for _, value in values)
+    return [
+        row
+        for row, value in values
+        if abs(value - (total - value)) > max(1.0, abs(total) * 1e-6)
+    ]
 
 
 def _contents_answer(

@@ -156,7 +156,11 @@ def test_ranked_table_grouping_and_argmax_exclude_unranked_entries():
     assert "Low human development: 1" in grouped.answer
     assert life is not None
     assert "Beta" in life.answer
-    assert "84.0 years" in life.answer
+    # The value and the column it came from, named the way the table names it
+    # rather than by a phrase written into the executor.
+    assert "84" in life.answer
+    assert "life expectancy" in life.answer
+    assert "Table 1" in life.answer
     assert "Monaco" not in life.answer
 
 

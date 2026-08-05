@@ -52,6 +52,29 @@ def field_descriptions(document: CompiledDocument) -> list[tuple[str, str, int]]
     )
 
 
+def table_descriptions(document: CompiledDocument) -> list[tuple[str, str, int]]:
+    """Describe each compiled table column the way its own header names it.
+
+    A document whose figures live in tables rather than in per-record fact
+    cards has nothing in the record catalog to bind a question to, so a
+    question about one of its columns reaches no operation. The columns
+    themselves are already named — the compiler read those names out of the
+    table's own header — so they belong beside the record fields.
+    """
+    described: list[tuple[str, str, int]] = []
+    for table in document.tables:
+        if not table.trusted or not table.rows:
+            continue
+        for column in table.columns:
+            filled = sum(
+                1 for row in table.rows
+                if isinstance(row.values.get(column), (int, float))
+            )
+            if filled >= max(2, round(len(table.rows) * 0.5)):
+                described.append((column, f"{table.title} — {column}", filled))
+    return sorted(described, key=lambda item: (-item[2], item[0]))
+
+
 class FieldBinder:
     """Resolve each question to at most one compiled field."""
 
@@ -85,7 +108,7 @@ class FieldBinder:
         """
         if not self._settings.enable_field_binding or not questions:
             return None
-        fields = field_descriptions(document)
+        fields = field_descriptions(document) + table_descriptions(document)
         if not fields:
             return None
         allowed = {field for field, _, _ in fields}

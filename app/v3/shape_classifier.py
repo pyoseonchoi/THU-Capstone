@@ -23,7 +23,7 @@ from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.logging_config import get_logger
 from app.schemas import QuestionRequest
-from app.v3.field_binder import field_descriptions
+from app.v3.field_binder import field_descriptions, table_descriptions
 from app.v3.models import CompiledDocument, QuestionShape, ShapePlan
 from app.v3.source_text import json_payload
 
@@ -77,7 +77,7 @@ class ShapeClassifier:
         """Return question id to shape plan, omitting questions it declines."""
         if not self._settings.enable_shape_classification or not questions:
             return {}
-        fields = field_descriptions(document)
+        fields = field_descriptions(document) + table_descriptions(document)
         groups = document_groups(document)
         if not fields and not groups and not document.contents_entries:
             # With no fields, no groups and no contents there is no operation

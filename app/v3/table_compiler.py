@@ -33,7 +33,9 @@ _HDI_ROW_START_RE = re.compile(
     r"(?P<label>[A-Z][^\d]+?)\s+(?P<hdi>0\.\d{3})(?=\s)",
 )
 _HDI_COMPONENT_RE = re.compile(
-    r"^\s*(?P<life>\d{2,3}\.\d|\.\.)\s+"
+    # Every component may carry a footnote letter, including the first: a
+    # marker there otherwise fails the whole row and drops its every value.
+    r"^\s*(?P<life>\d{2,3}\.\d|\.\.)(?:\s+[a-z])?\s+"
     r"(?P<expected>\d{1,2}\.\d|\.\.)(?:\s+[a-z])?\s+"
     r"(?P<mean>\d{1,2}\.\d|\.\.)(?:\s+[a-z])?\s+"
     r"(?P<gni>\d{1,3}(?:,\d{3})+|\.\.)(?:\s+[a-z])?\b",
