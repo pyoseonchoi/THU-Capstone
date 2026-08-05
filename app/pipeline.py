@@ -65,6 +65,42 @@ from app.v3.structured_executor import execute_structured
 
 logger = get_logger("pipeline.v3")
 ProgressCallback = Callable[[str, int, int, int], None]
+# How many of a question's distinctive words a dismissed record must carry
+# before the scan's verdict on it is worth a second reading.
+_MIN_DISMISSED_TERMS = 2
+# A word carried by more than this share of records cannot single one out.
+_MAX_TERM_SHARE = 0.25
+_QUESTION_STOPWORDS = frozenset({
+    "about", "across", "after", "among", "according", "book", "chapter",
+    "does", "each", "from", "give", "guide", "have", "into", "report",
+    "state", "that", "their", "these", "they", "this", "what", "when",
+    "where", "which", "with", "year", "entries", "entry", "every", "name",
+    "many", "much", "over", "same", "some", "there", "those", "were",
+})
+
+
+def _distinctive_terms(text: str, records: list[CompiledRecord]) -> set[str]:
+    """Return the question's words that could locate it within this document.
+
+    A word most records carry says nothing about which record answers the
+    question: in a book of parks, "park" is in every chapter. Only the words
+    that are rare across the document can single a record out, and which words
+    those are is a property of the document rather than of the subject.
+    """
+    words = {
+        term
+        for term in re.findall(r"[a-z0-9]+", text.casefold())
+        if len(term) >= 4 and term not in _QUESTION_STOPWORDS
+    }
+    if not records:
+        return words
+    ceiling = max(1, len(records) * _MAX_TERM_SHARE)
+    folded = [record.text.casefold() for record in records]
+    return {
+        term
+        for term in words
+        if sum(term in text for text in folded) <= ceiling
+    }
 
 
 class FullScanPipeline:
@@ -353,9 +389,10 @@ class FullScanPipeline:
         if result is not None:
             return result, question_results
         packet = build_evidence_packet(plan, question_results, expected_record_ids)
-        should_repair = self._evidence_needs_repair(plan, packet)
+        dismissed = self._dismissed_matches(plan, compiled, question_results)
+        should_repair = self._evidence_needs_repair(plan, packet) or bool(dismissed)
         if should_repair:
-            selected = self._lexical_repair_records(plan, compiled)
+            selected = dismissed or self._lexical_repair_records(plan, compiled)
             repaired = await self._mapper.map_selected_records(
                 compiled,
                 selected,
@@ -395,6 +432,48 @@ class FullScanPipeline:
                     expected_record_ids,
                 )
         return await self._answerer.generate(plan, packet), question_results
+
+    @staticmethod
+    def _dismissed_matches(
+        plan: V3QuestionPlan,
+        compiled: CompiledDocument,
+        results: list[V3MapResult],
+        *,
+        limit: int = 4,
+    ) -> list[CompiledRecord]:
+        """Return records the scan dismissed although they answer its terms.
+
+        A question that needs several pieces of evidence is only as good as
+        the records the scan admits, and a small model reading a long record
+        misses figures it plainly states. Where a cheap word match and the
+        scan's verdict disagree — the record carries the question's own
+        distinctive terms, yet came back with nothing — the verdict is the
+        side more likely to be wrong, so those records are read again by the
+        stronger model. Every record is still scanned first; this only revisits.
+        """
+        if plan.strategy == Strategy.ABSENCE_MATRIX:
+            return []
+        empty = {
+            result.record_id
+            for result in results
+            if result.question_id == plan.question_id and result.status == "no_evidence"
+        }
+        if not empty:
+            return []
+        records = all_mapping_records(compiled)
+        wanted = _distinctive_terms(plan.question, records)
+        if len(wanted) < 2:
+            return []
+        scored: list[tuple[int, CompiledRecord]] = []
+        for record in records:
+            if record.record_id not in empty:
+                continue
+            folded = record.text.casefold()
+            matched = sum(term in folded for term in wanted)
+            if matched >= _MIN_DISMISSED_TERMS:
+                scored.append((matched, record))
+        scored.sort(key=lambda item: (-item[0], item[1].ordinal))
+        return [record for _, record in scored[:limit]]
 
     @staticmethod
     def _evidence_needs_repair(plan: V3QuestionPlan, packet: EvidencePacket) -> bool:

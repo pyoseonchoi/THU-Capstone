@@ -170,3 +170,52 @@ def test_an_object_shaped_answer_keeps_its_figures():
     assert _parse_answer('{"answer": {"date": "475 BC"}}') == "date: 475 BC"
     assert "475" in _parse_answer('{"year": 475, "era": "BC"}')
     assert _parse_answer('{"answer": "Plain prose."}') == "Plain prose."
+
+
+def test_a_dismissed_record_carrying_rare_question_terms_is_revisited():
+    from app.pipeline import FullScanPipeline, _distinctive_terms
+
+    document = _document()
+    # Only one record mentions the climb; every record mentions parks.
+    document.records[2].text += " Britain's first recorded rock climb on Clogwyn."
+    question = "Which entry records the first rock climb on Clogwyn?"
+
+    terms = _distinctive_terms(question, document.records)
+
+    # A word every record carries cannot single one out, so it is not a term.
+    assert "clogwyn" in terms
+    assert "entry" not in terms
+
+    results = [
+        V3MapResult(question_id="q", record_id=record.record_id, status="no_evidence")
+        for record in document.records
+    ]
+    plan = V3QuestionPlan(
+        question_id="q",
+        question=question,
+        category="needle",
+        strategy=Strategy.EXHAUSTIVE_LOOKUP,
+    )
+
+    revisited = FullScanPipeline._dismissed_matches(plan, document, results)
+
+    assert [record.record_id for record in revisited] == ["record-003"]
+
+
+def test_nothing_is_revisited_when_the_scan_found_evidence_everywhere():
+    from app.pipeline import FullScanPipeline
+
+    document = _document()
+    document.records[2].text += " Britain's first recorded rock climb on Clogwyn."
+    results = [
+        V3MapResult(question_id="q", record_id=record.record_id, status="evidence_found")
+        for record in document.records
+    ]
+    plan = V3QuestionPlan(
+        question_id="q",
+        question="Which entry records the first rock climb on Clogwyn?",
+        category="needle",
+        strategy=Strategy.EXHAUSTIVE_LOOKUP,
+    )
+
+    assert FullScanPipeline._dismissed_matches(plan, document, results) == []
