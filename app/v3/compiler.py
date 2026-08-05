@@ -113,8 +113,20 @@ def _is_fact_section_title(title: str) -> bool:
     )
 
 
+_FACT_SECTION_PREFIX_RE = re.compile(
+    r"^(?P<title>[A-Za-z][\w'’ -]{0,60}?\s+in\s+numbers)\b"
+)
+
+
 def _fact_marker(page_text: str) -> tuple[int, str, int] | None:
-    """Return line index, title, and heading level for a fact section."""
+    """Return line index, title, and heading level for a fact section.
+
+    Some entries' first stat runs on straight into the label instead of
+    starting a new line ("Park in numbers 141.2 Area covered ..."), so the
+    label never appears as a line by itself. Matching just the leading "X in
+    numbers" prefix -- not requiring it to be the whole line -- recovers
+    those anchors without depending on any one entity's exact wording.
+    """
     for index, raw_line in enumerate(page_text.splitlines()):
         parsed = _heading(raw_line)
         if parsed and _is_fact_section_title(parsed[1]):
@@ -122,6 +134,9 @@ def _fact_marker(page_text: str) -> tuple[int, str, int] | None:
         cleaned = _clean_line(raw_line)
         if raw_line.strip() == cleaned and _is_fact_section_title(cleaned):
             return index, cleaned, 7
+        prefix = _FACT_SECTION_PREFIX_RE.match(cleaned)
+        if prefix and _is_fact_section_title(prefix.group("title")):
+            return index, prefix.group("title"), 7
     return None
 
 
