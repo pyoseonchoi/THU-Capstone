@@ -58,3 +58,43 @@ def test_prose_containing_numbers_is_not_a_table():
     )
 
     assert parse_flat_table(prose) == ([], [])
+
+
+def test_a_contents_list_is_found_whatever_precedes_its_heading():
+    """The heading opens the page; it need not be its first characters."""
+    from app.v3.table_compiler import _CONTENTS_HEADING_RE
+
+    assert _CONTENTS_HEADING_RE.match("Contents Foreword v")
+    # A running folio, a page number, and "Table of" all come first here.
+    assert _CONTENTS_HEADING_RE.match("9 Table of contents Foreword 3")
+    # The word inside a sentence does not open a contents list.
+    assert not _CONTENTS_HEADING_RE.match("The park contents are varied")
+
+
+def test_a_contents_entry_may_name_its_kind_and_close_its_number():
+    """One list, written two ways: "1.1 Title 21" and "Figure 1.1. Title 21"."""
+    from app.v3.table_compiler import _CONTENTS_ENTRY_RE
+
+    plain = "1.1 GDP growth remained resilient 21 1.2 Unemployment stays low 22"
+    captioned = (
+        "Figure 1.1. GDP growth remained resilient 21 "
+        "Figure 1.2. Unemployment stays low 22"
+    )
+
+    for body in (plain, captioned):
+        found = [
+            (match.group("identifier"), int(match.group("page")))
+            for match in _CONTENTS_ENTRY_RE.finditer(body)
+        ]
+        assert found == [("1.1", 21), ("1.2", 22)]
+
+
+def test_the_word_in_a_sentence_does_not_start_a_contents_section():
+    """A section heading is set in capitals; a sentence's word is not."""
+    from app.v3.table_compiler import _CONTENTS_GROUP_RE
+
+    prose = "Annex 5.B. Additional figures and tables 308"
+    heading = "FIGURES Figure 1.1. GDP growth remained resilient 21"
+
+    assert not list(_CONTENTS_GROUP_RE.finditer(prose))
+    assert [m.group("group") for m in _CONTENTS_GROUP_RE.finditer(heading)] == ["FIGURES"]

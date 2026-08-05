@@ -10,15 +10,24 @@ from app.v3.flat_table import parse_flat_table
 from app.v3.models import CompiledTable, CompiledTableRow, ContentsEntry
 
 _TABLE_MARKER_RE = re.compile(r"\bT\s*A\s*B\s*L\s*E\s+(?P<number>\d{1,3})\b", re.I)
+# A section heading is set in capitals. The same word inside a sentence —
+# "Additional figures and tables" — is not a heading, and reading it as one
+# splits the list it belongs to.
 _CONTENTS_GROUP_RE = re.compile(
     r"\b(?P<group>B\s*O\s*X\s*E\s*S|S\s*P\s*O\s*T\s*L\s*I\s*G\s*H\s*T\s*S|"
     r"F\s*I\s*G\s*U\s*R\s*E\s*S|T\s*A\s*B\s*L\s*E\s*S)\b",
-    re.I,
 )
+# A contents list may or may not close its numbering with a full stop —
+# "3.1 Title 156" and "3.1. Title 156" are the same list written two ways.
 _CONTENTS_ENTRY_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?P<identifier>(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\s+"
-    r"(?P<title>.+?)\s+(?P<page>\d{1,3})(?=\s+(?:(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\s+|$)",
+    r"(?<![A-Za-z0-9])(?P<identifier>(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\.?\s+"
+    r"(?P<title>.+?)\s+(?P<page>\d{1,3})"
+    r"(?=\s+(?:[A-Za-z]{3,12}\s+)?(?:(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\.?\s+|$)",
     re.I | re.S,
+)
+_CONTENTS_HEADING_RE = re.compile(
+    r"^[\s\W\d]{0,24}?(?:table\s+of\s+)?contents\b",
+    re.IGNORECASE,
 )
 _CONTENTS_IDENTIFIER = (
     r"(?:[OS]\.\d+(?:\.\d+){0,2}|S?\d+(?:\.\d+){1,3})"
@@ -328,11 +337,14 @@ def compile_contents(
     pages: list[DocumentPage],
 ) -> tuple[str, list[int], list[ContentsEntry], bool]:
     """Preserve the contents range and parse straightforward single-column lists."""
+    # The heading opens the page but need not be its first characters: a
+    # running folio, a page number, and the words "Table of" all come before
+    # it in documents that are otherwise laid out the same way.
     start_index = next(
         (
             index
             for index, page in enumerate(pages)
-            if re.match(r"^\s*contents\b", page.text, re.I)
+            if _CONTENTS_HEADING_RE.match(page.text)
         ),
         None,
     )
