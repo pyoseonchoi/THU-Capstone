@@ -86,6 +86,7 @@ class CompiledTable(BaseModel):
 
     table_id: str
     number: int | None = None
+    identifier: str = ""
     title: str
     page_start: int
     page_end: int

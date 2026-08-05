@@ -11,6 +11,7 @@ from app.v3.models import (
     ExecutionResult,
     NumberFact,
     OperationKind,
+    Strategy,
     V3QuestionPlan,
 )
 
@@ -197,6 +198,151 @@ def _table_answer(
             f"Among the ranked entries, {row.label} has the {direction} {label}: "
             f"{rendered}."
         ),
+        evidence=[row.quote],
+        source_pages=[row.page],
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
+def _parse_labeled_value(raw: str) -> tuple[float, str] | None:
+    """Parse a generic table cell into (numeric value, unit) if it is
+    comparable -- a percentage or a plain/grouped number. Dates and dashes
+    are not comparable, so those return None rather than a wrong number."""
+    text = raw.strip()
+    unit = ""
+    if text.endswith("%"):
+        unit = "%"
+        text = text[:-1]
+    text = text.replace(" ", "").replace(",", "")
+    try:
+        return float(text), unit
+    except ValueError:
+        return None
+
+
+def _best_matching_column(question: str, columns: list[str]) -> str:
+    """Pick the column whose header words overlap most with the question,
+    so a question can refer to a Python-parsed table's own column by name
+    without a fixed field-name registry for every possible metric."""
+    if not columns:
+        return ""
+    if len(columns) == 1:
+        return columns[0]
+    folded_question = set(re.findall(r"[a-z]+", question.casefold()))
+    best_column, best_score = columns[0], -1
+    for column in columns:
+        words = set(re.findall(r"[a-z]+", column.casefold()))
+        score = len(words & folded_question)
+        if score > best_score:
+            best_column, best_score = column, score
+    return best_column
+
+
+def _entity_row(table, question: str):
+    """Find the one table row whose label is literally named in the
+    question -- e.g. "Switzerland" in a question about Table 5.1."""
+    folded_question = question.casefold()
+    matches = [row for row in table.rows if row.label.casefold() in folded_question]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _labeled_claim_compare_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    """Resolve a two-table numeric contradiction directly from Python-parsed
+    table rows when the question names both tables and one entity, instead
+    of trusting a small model to re-find and re-read the right row out of
+    a large table it only sees in fragments.
+    """
+    if plan.strategy != Strategy.CLAIM_COMPARE:
+        return None
+    identifiers = plan.metadata.get("source_table_identifiers") or []
+    if len(identifiers) != 2:
+        return None
+    tables = [
+        next(
+            (item for item in document.tables if item.identifier == identifier and item.trusted),
+            None,
+        )
+        for identifier in identifiers
+    ]
+    if any(table is None for table in tables):
+        return None
+    rows = [_entity_row(table, plan.question) for table in tables]
+    if any(row is None for row in rows):
+        return None
+
+    resolved = []
+    for table, row in zip(tables, rows, strict=True):
+        column = _best_matching_column(plan.question, table.columns)
+        if not column or column not in row.values:
+            return None
+        parsed = _parse_labeled_value(str(row.values[column]))
+        if parsed is None:
+            return None
+        resolved.append((table, row, column, parsed[0], parsed[1]))
+
+    (table_a, row_a, col_a, val_a, unit_a), (table_b, row_b, col_b, val_b, unit_b) = resolved
+    if val_a == val_b:
+        return None
+    entity = row_a.label
+    answer = (
+        f"For {entity}, Table {table_a.identifier} reports {val_a:g}{unit_a} "
+        f"({col_a}), while Table {table_b.identifier} reports {val_b:g}{unit_b} "
+        f"({col_b}). These figures conflict."
+    )
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=answer,
+        evidence=[row_a.quote, row_b.quote],
+        source_pages=sorted({row_a.page, row_b.page}),
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
+def _labeled_superlative_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+) -> ExecutionResult | None:
+    """Resolve a highest/lowest lookup directly from a Python-parsed
+    table's full row set, rather than trusting a per-chunk model to have
+    seen (and correctly read) every row of a large table.
+    """
+    identifiers = plan.metadata.get("source_table_identifiers") or []
+    if len(identifiers) != 1:
+        return None
+    argmax_step = _operation(plan, OperationKind.ARGMAX)
+    argmin_step = _operation(plan, OperationKind.ARGMIN)
+    if not argmax_step and not argmin_step:
+        return None
+    table = next(
+        (
+            item for item in document.tables
+            if item.identifier == identifiers[0] and item.trusted
+        ),
+        None,
+    )
+    if table is None or not table.rows:
+        return None
+    column = _best_matching_column(plan.question, table.columns)
+    if not column:
+        return None
+    candidates = []
+    for row in table.rows:
+        parsed = _parse_labeled_value(str(row.values.get(column, "")))
+        if parsed is not None:
+            candidates.append((row, parsed[0], parsed[1]))
+    if not candidates:
+        return None
+    selector = min if argmin_step else max
+    row, value, unit = selector(candidates, key=lambda item: item[1])
+    direction = "lowest" if argmin_step else "highest"
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=f"{row.label} has the {direction} {column.lower()}: {value:g}{unit}.",
         evidence=[row.quote],
         source_pages=[row.page],
         complete=True,
@@ -1381,6 +1527,8 @@ def execute_structured(
     """Return a complete deterministic answer when the document model supports it."""
     for executor in (
         _table_answer,
+        _labeled_claim_compare_answer,
+        _labeled_superlative_answer,
         _contents_answer,
         _catalog_answer,
         _generic_claim_conflict,

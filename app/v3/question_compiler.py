@@ -326,6 +326,9 @@ def _structured_metadata(
         None,
     )
     table_match = re.search(r"\btable\s+(\d+)\b", question, re.I)
+    table_identifiers = list(dict.fromkeys(
+        match.group(1) for match in re.finditer(r"\btable\s+([\dA-Za-z.]+)", question, re.I)
+    ))
     folded_question = question.casefold()
     mentions_contents_category = any(
         category in folded_question
@@ -349,6 +352,7 @@ def _structured_metadata(
             if step.kind == OperationKind.FILTER
         ],
         "source_table_number": int(table_match.group(1)) if table_match else None,
+        "source_table_identifiers": table_identifiers,
         "source_view": source_view,
     }
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from app.schemas import DocumentPage
 from app.v3.models import CompiledTable, CompiledTableRow, ContentsEntry
@@ -31,11 +31,12 @@ _HDI_ROW_START_RE = re.compile(
     r"(?<![\d.,])(?P<rank>[1-9]\d{0,2})\s+"
     r"(?P<label>[A-Z][^\d]+?)\s+(?P<hdi>0\.\d{3})(?=\s)",
 )
+_FOOTNOTE_RE = r"(?:\s+[a-z]+(?:,\s*[a-z]+)*)?"
 _HDI_COMPONENT_RE = re.compile(
-    r"^\s*(?P<life>\d{2,3}\.\d|\.\.)\s+"
-    r"(?P<expected>\d{1,2}\.\d|\.\.)(?:\s+[a-z])?\s+"
-    r"(?P<mean>\d{1,2}\.\d|\.\.)(?:\s+[a-z])?\s+"
-    r"(?P<gni>\d{1,3}(?:,\d{3})+|\.\.)(?:\s+[a-z])?\b",
+    rf"^\s*(?P<life>\d{{2,3}}\.\d|\.\.){_FOOTNOTE_RE}\s+"
+    rf"(?P<expected>\d{{1,2}}\.\d|\.\.){_FOOTNOTE_RE}\s+"
+    rf"(?P<mean>\d{{1,2}}\.\d|\.\.){_FOOTNOTE_RE}\s+"
+    rf"(?P<gni>\d{{1,3}}(?:,\d{{3}})+|\.\.){_FOOTNOTE_RE}\b",
     re.I,
 )
 _HDI_GROUPS = (
@@ -183,6 +184,178 @@ def _parse_markdown_rows(
     return columns, rows
 
 
+_LABELED_DATE_RE = re.compile(r"^\d{1,2}-[A-Za-z]{3}-\d{2,4}$")
+_LABELED_NUMBER_RE = re.compile(r"^\d{1,3}(?:,\d{3})+(?:\.\d+)?%?$|^\d+(?:\.\d+)?%?$")
+_LABELED_STOP_WORDS = {"total", "totals", "note", "notes", "source"}
+_LABELED_MAX_LABEL_WORDS = 6
+
+
+def _is_labeled_value(token: str) -> bool:
+    """Whether a whitespace-delimited token is a data value (number, percent,
+    or short date) rather than part of a row's label."""
+    stripped = token.rstrip(",;").replace(" ", "")
+    return bool(
+        _LABELED_DATE_RE.fullmatch(token.rstrip(","))
+        or _LABELED_NUMBER_RE.fullmatch(stripped)
+    )
+
+
+def _merge_grouped_number_tokens(tokens: list[str]) -> list[str]:
+    """Rejoin a bare 1-3 digit token immediately followed by an exact 3-digit
+    token into one number, undoing a space-as-thousands-separator split
+    (e.g. "2 321" -> one value, not two)."""
+    merged: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if (
+            index + 1 < len(tokens)
+            and re.fullmatch(r"\d{1,3}", tokens[index])
+            and re.fullmatch(r"\d{3}", tokens[index + 1])
+        ):
+            merged.append(f"{tokens[index]} {tokens[index + 1]}")
+            index += 2
+            continue
+        merged.append(tokens[index])
+        index += 1
+    return merged
+
+
+def _lenient_label_value_runs(tokens: list[str]) -> list[tuple[int, int, int]]:
+    """Split tokens into alternating (label-run, value-run) pairs, keeping
+    each run's token-index bounds. Column count and label shape are not yet
+    known, so value-runs may vary in length here -- callers reconcile that
+    against the stable shape of the runs that follow the header."""
+    runs: list[tuple[int, int, int]] = []
+    index, total = 0, len(tokens)
+    while index < total:
+        label_start = index
+        while index < total and not _is_labeled_value(tokens[index]):
+            index += 1
+        if index == label_start:
+            index += 1
+            continue
+        value_start = index
+        while index < total and _is_labeled_value(tokens[index]):
+            index += 1
+        runs.append((label_start, value_start, index))
+    return runs
+
+
+def _parse_labeled_rows(
+    table_id: str,
+    page: DocumentPage,
+    start: int,
+) -> tuple[list[str], list[CompiledTableRow]]:
+    """Reconstruct rows from a table whose entries read as a flat
+    "Label value value..." run with no markdown or newline structure, e.g.
+    a country-by-country or company-by-company breakdown flattened by PDF
+    text extraction. Row boundaries are inferred purely from the repeating
+    label/value(s) rhythm -- there is no fixed vocabulary of valid labels,
+    so this applies to any entity type (countries, companies, regions...)
+    rather than one specific document's facts.
+
+    The header line (e.g. "Country Response rate") is indistinguishable
+    from a row's own label using shape alone, since both are runs of
+    capitalized words. It is resolved by learning the typical label length
+    from the rows after the first (unambiguous once past the header) and
+    picking whichever split of the first row's label span comes closest to
+    that length, rather than guessing from capitalization alone.
+    """
+    text = page.text[start:start + 4000]
+    tokens = _merge_grouped_number_tokens([m.group(0) for m in re.finditer(r"\S+", text)])
+    runs = _lenient_label_value_runs(tokens)
+    if len(runs) < 3:
+        return [], []
+
+    # A footnote/source line after the real rows ("Note: ... 90% of firms
+    # ...") often contains its own scattered numbers, which would otherwise
+    # keep generating bogus "rows" out of ordinary prose. Cut everything
+    # from the first such marker onward rather than filtering it row by
+    # row, so it can't contaminate the label-length statistics below.
+    stop_index = next(
+        (
+            index
+            for index, (label_start, value_start, _) in enumerate(runs)
+            if index > 0
+            and value_start > label_start
+            and tokens[label_start].strip(" *").casefold().rstrip(":") in _LABELED_STOP_WORDS
+        ),
+        len(runs),
+    )
+    runs = runs[:stop_index]
+    if len(runs) < 4:
+        # A page-footer boilerplate line (a StatLink URL, a copyright
+        # notice) can coincidentally repeat a short "label + number"
+        # rhythm two or three times; real entity-indexed tables in
+        # practice run much longer than that, so a low row count is
+        # treated as a sign this isn't a real table rather than a small
+        # one, and the whole page is rejected.
+        return [], []
+
+    later = runs[1:]
+    value_counts = [end - value_start for _, value_start, end in later]
+    counter = Counter(value_counts)
+    num_columns = counter.most_common(1)[0][0]
+    trustworthy_later = [run for run in later if (run[2] - run[1]) == num_columns]
+    if len(trustworthy_later) < 2:
+        return [], []
+    label_lengths = sorted(
+        value_start - label_start for label_start, value_start, _ in trustworthy_later
+    )
+    target_label_len = label_lengths[len(label_lengths) // 2]
+    if target_label_len > _LABELED_MAX_LABEL_WORDS or any(
+        length > _LABELED_MAX_LABEL_WORDS for length in label_lengths
+    ):
+        # Real row labels (country/company/region/product names) are short
+        # identifying phrases. A run this long is prose that happened to
+        # contain scattered numbers -- not an entity-indexed table.
+        return [], []
+
+    rows: list[CompiledTableRow] = []
+    header_words: list[str] = []
+    first_label_start, first_value_start, first_value_end = runs[0]
+    if first_value_end - first_value_start == num_columns:
+        span = first_value_start - first_label_start
+        best_k = min(range(1, span + 1), key=lambda k: abs(k - target_label_len))
+        header_words = tokens[first_label_start:first_value_start - best_k]
+        label = " ".join(tokens[first_value_start - best_k:first_value_start]).strip(" *")
+        if label.casefold().rstrip(":") not in _LABELED_STOP_WORDS:
+            rows.append((label, tokens[first_value_start:first_value_end]))
+
+    for label_start, value_start, value_end in trustworthy_later:
+        label = " ".join(tokens[label_start:value_start]).strip(" *")
+        if label.casefold().rstrip(":") in _LABELED_STOP_WORDS:
+            continue
+        rows.append((label, tokens[value_start:value_end]))
+
+    unique_labels = len({label.casefold() for label, _ in rows}) == len(rows)
+    if len(rows) < 4 or not unique_labels:
+        return [], []
+
+    # The header phrase preceding the row-index column's own name (e.g.
+    # "Country") splits at each new capitalized word into that many column
+    # names ("Nb. of employees", "Nb. of companies", ...). Keep only the
+    # last num_columns pieces, discarding the row-index column's own label;
+    # fall back to positional names if the header shape is irregular.
+    header_text = " ".join(header_words).strip()
+    split_columns = [part.strip() for part in re.split(r"\s+(?=[A-Z])", header_text) if part.strip()]
+    if len(split_columns) >= num_columns:
+        columns = split_columns[-num_columns:]
+    else:
+        columns = [f"col_{index + 1}" for index in range(num_columns)]
+    table_rows = [
+        CompiledTableRow(
+            row_id=f"{table_id}-row-{index + 1:03d}",
+            label=label,
+            page=page.page_number,
+            values=dict(zip(columns, values, strict=True)),
+            quote=f"{label} {' '.join(values)}",
+        )
+        for index, (label, values) in enumerate(rows)
+    ]
+    return columns, table_rows
+
+
 def compile_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
     """Find consecutive table pages and reconstruct supported row schemas."""
     page_runs: list[list[DocumentPage]] = []
@@ -214,8 +387,6 @@ def compile_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
             f"[Page {page.page_number}]\n{page.text}" for page in run
         )
         table_signal = _compact_heading(raw_text)
-        if len(run) == 1 and "hdirank" not in table_signal and "|" not in raw_text:
-            continue
         occurrences[number] += 1
         suffix = f"-{occurrences[number]}" if occurrences[number] > 1 else ""
         table_id = f"table-{number}{suffix}"
@@ -237,6 +408,12 @@ def compile_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
                 "mean_schooling_years_2023",
                 "gni_per_capita_2023",
             ]
+        if len(run) == 1 and not rows:
+            continue
+        identifier = ""
+        caption_match = _BODY_CAPTION_RE.search(run[0].text[:200])
+        if caption_match and caption_match.group("group").casefold() == "table":
+            identifier = caption_match.group("identifier")
         ranks = [row.rank for row in rows if row.rank is not None]
         unique_labels = len({row.label.casefold() for row in rows}) == len(rows)
         rank_consistent = bool(ranks) and abs(len(ranks) - max(ranks)) <= max(
@@ -251,6 +428,7 @@ def compile_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
         tables.append(CompiledTable(
             table_id=table_id,
             number=number,
+            identifier=identifier,
             title=title,
             page_start=run[0].page_number,
             page_end=run[-1].page_number,
@@ -260,6 +438,44 @@ def compile_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
             trusted=trusted,
             warnings=warnings,
         ))
+
+    # A page's real table caption isn't always within the narrow window
+    # _table_number checks, so scan every page independently (not just the
+    # ones the number-based run grouping above already picked up) for a
+    # flat "label, then values, repeated" schema. This runs after, and
+    # never touches, the existing HDI/markdown run-grouping logic, so it
+    # can't disturb tables that mechanism already resolves correctly.
+    found_identifiers = {table.identifier for table in tables if table.trusted and table.identifier}
+    table_number = 0
+    for page in pages:
+        for match in _BODY_CAPTION_RE.finditer(page.text):
+            if match.group("group").casefold() != "table":
+                continue
+            identifier = match.group("identifier")
+            if identifier in found_identifiers:
+                continue
+            table_number += 1
+            columns, rows = _parse_labeled_rows(
+                f"labeled-table-{table_number}", page, match.end()
+            )
+            if not rows:
+                continue
+            found_identifiers.add(identifier)
+            leading_number_match = re.match(r"\d+", identifier)
+            blurb = page.text[match.end():match.end() + 80].strip()
+            tables.append(CompiledTable(
+                table_id=f"labeled-table-{table_number}",
+                number=int(leading_number_match.group(0)) if leading_number_match else None,
+                identifier=identifier,
+                title=f"Table {identifier} {blurb}".strip(),
+                page_start=page.page_number,
+                page_end=page.page_number,
+                columns=columns,
+                rows=rows,
+                raw_text=page.text,
+                trusted=True,
+                warnings=[],
+            ))
     return tables
 
 
