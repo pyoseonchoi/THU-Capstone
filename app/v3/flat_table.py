@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import re
 
-_CELL = r"(?:\d[\d ]*\d|\d|-|\.\.|n/a|na)"
+# A cell may carry the unit it is printed with, most often a percent sign.
+_CELL = r"(?:(?:\d[\d ]*\d|\d)(?:\.\d+)?%?|-|\.\.|n/a|na)"
 _TERMINATORS = re.compile(
     r"\b(?:Note|Notes|Source|Sources|StatLink)\s*:",
     re.IGNORECASE,
@@ -97,7 +98,8 @@ def _row_candidates(body: str) -> list[tuple[str, list[str], int]]:
     )
     for match in pattern.finditer(body):
         label = re.sub(r"\s+", " ", match.group("label")).strip(" ,;")
-        cells = match.group("cells").split()
+        # A printed unit belongs to the column, not to the number.
+        cells = [cell.rstrip("%") for cell in match.group("cells").split()]
         if label and cells:
             rows.append((label, cells, match.end() - match.start()))
     return rows

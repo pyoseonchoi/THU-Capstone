@@ -323,7 +323,11 @@ def _table_answer(
         for other, other_value in ordered[1:3]
     )
     comparison = f" The next are {runners}." if runners else ""
-    where = f"Table {table.number}" if table.number is not None else table.title[:40]
+    # The caption tells one table from another; the leading number does not,
+    # because a report numbers its annex tables within the same chapter.
+    where = table.title.strip()[:60] or (
+        f"Table {table.number}" if table.number is not None else "the table"
+    )
     return ExecutionResult(
         question_id=plan.question_id,
         answer=(

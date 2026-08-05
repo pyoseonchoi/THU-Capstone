@@ -869,9 +869,20 @@ def compile_document(
 ) -> CompiledDocument:
     """Compile a trusted repeated-entity registry or exhaustive fallback segments."""
     tables = compile_tables(pages)
-    known = {table.number for table in tables if table.rows}
+    # A report numbers tables within a chapter and again within its annexes,
+    # so "Table 5.1" and "Annex Table 5.A.7" share a leading number while
+    # being different tables. Only the pages a table was read from tell them
+    # apart, and dropping one because the other exists loses its figures.
+    known = {
+        page
+        for table in tables
+        if table.rows
+        for page in range(table.page_start, table.page_end + 1)
+    }
     tables += [
-        table for table in compile_flat_tables(pages) if table.number not in known
+        table
+        for table in compile_flat_tables(pages)
+        if table.page_start not in known
     ]
     contents_text, contents_pages, contents_entries, contents_trusted = compile_contents(pages)
     inline = _compile_inline_profiles(document_id, pages)

@@ -98,3 +98,18 @@ def test_the_word_in_a_sentence_does_not_start_a_contents_section():
 
     assert not list(_CONTENTS_GROUP_RE.finditer(prose))
     assert [m.group("group") for m in _CONTENTS_GROUP_RE.finditer(heading)] == ["FIGURES"]
+
+
+def test_a_cell_may_carry_the_unit_it_is_printed_with():
+    """Percentages are cells; the sign belongs to the column, not the number."""
+    body = (
+        "Efficiency of weighting Country Efficiency "
+        "Belgium 76% Canada 88% France 84% Germany 90% "
+        "New Zealand 45% Switzerland 44% United Kingdom 89%"
+    )
+
+    columns, rows = parse_flat_table(body)
+
+    assert columns == ["country", "efficiency"]
+    assert dict(rows)["Switzerland"] == [44.0]
+    assert min(rows, key=lambda item: item[1][0])[0] == "Switzerland"
