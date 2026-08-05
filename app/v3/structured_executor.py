@@ -198,6 +198,28 @@ def _registry_is_trusted(document: CompiledDocument) -> bool:
     )
 
 
+def _entity_count_is_evidenced(document: CompiledDocument) -> bool:
+    """Report whether how many records exist is itself evidence, not a guess.
+
+    A registry can fail its integrity check because one signal disagrees —
+    fact cards lost in conversion, a contents page that did not parse — while
+    the record count remains well established. Cycle segmentation counts
+    chapters by a heading the document repeats exactly once per chapter, so
+    the marker tally corroborates the record count independently of whatever
+    else failed, and a question about how many entities exist can be answered
+    from it.
+    """
+    if document.record_kind != "repeated_entity" or not document.records:
+        return False
+    if _registry_is_trusted(document):
+        return True
+    signals = document.registry_signals
+    return (
+        signals.get("segmentation") == "boilerplate_cycle"
+        and signals.get("cycle_markers") == len(document.records)
+    )
+
+
 def _operation(plan: V3QuestionPlan, kind: OperationKind):
     return next((step for step in plan.operations if step.kind == kind), None)
 
@@ -948,15 +970,37 @@ def _generic_needle_answer(
             ):
                 continue
             phrase = f"first recorded {event}" if event else "first recorded"
+            label = f"The first recorded {event}" if event else "The event"
+            # The compiler bound this figure to the label that names it. A
+            # fact card carries no sentence punctuation, so re-reading its raw
+            # text matches the first number in the whole card — an area or a
+            # summit height — rather than the year being asked about.
+            bound = next(
+                (
+                    item
+                    for item in record.number_facts
+                    if phrase in item.label.casefold()
+                ),
+                None,
+            )
+            if bound is not None:
+                era = " BC" if bound.value < 0 or "bc" in bound.unit.casefold() else ""
+                return ExecutionResult(
+                    question_id=plan.question_id,
+                    answer=f"{label} is dated to {abs(bound.value):g}{era}.",
+                    evidence=[_fact_evidence(record, bound)],
+                    source_pages=[bound.page],
+                    complete=True,
+                    strategy=plan.strategy,
+                )
             sentence = _sentence_with(record.text, phrase)
             match = re.search(
-                r"(?:dated\s+to\s+)?(\d[\d,]*)\s*(BC|BCE|AD|CE)?",
+                rf"{re.escape(phrase)}\D{{0,40}}?(\d[\d,]*)\s*(BC|BCE|AD|CE)?",
                 sentence,
                 re.IGNORECASE,
             )
             if sentence and match:
                 era = f" {match.group(2).upper()}" if match.group(2) else ""
-                label = f"The first recorded {event}" if event else "The event"
                 return ExecutionResult(
                     question_id=plan.question_id,
                     answer=f"{label} is dated to {match.group(1)}{era}.",
@@ -969,7 +1013,7 @@ def _generic_needle_answer(
 
 
 def _catalog_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    if not _registry_is_trusted(document):
+    if not _entity_count_is_evidenced(document):
         return None
     folded = plan.question.casefold()
     countries = _country_mentions(plan.question, document)
@@ -1027,6 +1071,15 @@ def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> Execution
     ]
     for field in fields:
         candidates = _facts(document, field)
+        # A record states each measurement once. Two units for one field
+        # inside a single record means its boundary swallowed a neighbour's
+        # fact card, so the odd unit belongs to a record we cannot name.
+        per_record: dict[str, set[str]] = {}
+        for record, fact in candidates:
+            if fact.unit:
+                per_record.setdefault(record.record_id, set()).add(fact.unit.casefold())
+        if any(len(units) > 1 for units in per_record.values()):
+            continue
         counts = Counter(fact.unit for _, fact in candidates if fact.unit)
         if len(counts) < 2:
             continue

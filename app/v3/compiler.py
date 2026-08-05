@@ -988,6 +988,7 @@ def compile_document(
 
     trusted, unique_titles = integrity(records, len(anchors))
     segmentation = "fact_sections"
+    cycle_markers = 0
     if not trusted:
         # Fact-section anchors merge chapters whose fact box was lost in
         # conversion. Recurring chapter furniture calibrates the true record
@@ -1000,6 +1001,9 @@ def compile_document(
                 records = candidate
                 trusted, unique_titles = candidate_trusted, candidate_titles
                 segmentation = "boilerplate_cycle"
+                # The marker repeats once per chapter, so its occurrences are
+                # independent evidence for how many records the document has.
+                cycle_markers = len(segments)
     if not trusted:
         warnings.append("Repeated-entity registry failed an integrity check")
     if toc_count and toc_count != len(records):
@@ -1049,6 +1053,7 @@ def compile_document(
             "contents_entries": toc_count,
             "assigned_pages": len(assigned_pages),
             "segmentation": segmentation,
+            "cycle_markers": cycle_markers,
         },
         warnings=warnings,
     )
