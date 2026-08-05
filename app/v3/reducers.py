@@ -42,53 +42,18 @@ def _dominant_unit(rows) -> str:
 
 
 COVERED_STATUSES = {*TERMINAL_STATUSES, "uncertain"}
-_CONCEPT_STOPWORDS = {
-    "across",
-    "all",
-    "book",
-    "different",
-    "does",
-    "each",
-    "entries",
-    "examples",
-    "explain",
-    "guide",
-    "handle",
-    "identify",
-    "overall",
-    "profile",
-    "profiles",
-    "station",
-    "stations",
-    "using",
-    "what",
-    "which",
-}
-_CONCEPT_EXPANSIONS = {
-    "fire": {"fire", "burn", "burning", "wildfire", "post-fire"},
-    "wildlife": {
-        "wildlife",
-        "species",
-        "population",
-        "recovery",
-        "reintroduction",
-        "conservation",
-        "threatened",
-    },
-    "livelihoods": {
-        "livelihood",
-        "families",
-        "community",
-        "communities",
-        "herding",
-        "cutting",
-        "fishers",
-        "traditional",
-        "councils",
-    },
-    "glaciation": {"glacier", "glacial", "ice age", "ice cap", "moraine"},
-    "border": {"border", "cross-border", "transboundary", "paired", "shared"},
-}
+# Words that carry no topic: interrogatives, and the words a question uses to
+# address the document itself rather than its subject.
+_CONCEPT_STOPWORDS = frozenset({
+    "about", "across", "all", "also", "among", "another", "any", "been",
+    "between", "both", "each", "either", "entries", "entry", "every",
+    "examples", "explain", "from", "give", "handle", "have", "here", "how",
+    "identify", "into", "its", "itself", "list", "many", "more", "most",
+    "much", "name", "over", "overall", "same", "several", "some", "such",
+    "taking", "than", "that", "their", "them", "then", "there", "these",
+    "they", "this", "those", "through", "using", "well", "were",
+    "what", "when", "where", "which", "while", "whole", "with", "within",
+})
 
 
 def _normalized_text(text: str) -> str:
@@ -102,9 +67,6 @@ def _concept_terms(question: str) -> set[str]:
         for term in re.findall(r"[a-z][a-z-]{3,}", folded)
         if term not in _CONCEPT_STOPWORDS
     }
-    for trigger, expansions in _CONCEPT_EXPANSIONS.items():
-        if trigger in folded or any(expansion in folded for expansion in expansions):
-            terms.update(expansions)
     return terms
 
 

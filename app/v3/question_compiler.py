@@ -114,13 +114,25 @@ def _threshold(question: str) -> float | None:
     return float(match.group(1).replace(",", "")) if match else None
 
 
+_DESCRIBED_AS_RE = re.compile(
+    r"\bdescribed as\s+(?P<values>[a-z][\w-]*(?:\s*,\s*[a-z][\w-]*)*"
+    r"\s*,?\s+or\s+[a-z][\w-]*)",
+    re.IGNORECASE,
+)
+
+
 def _status_values(question: str) -> list[str]:
-    folded = question.casefold()
-    return [
-        status
-        for status in ("inscribed", "nominated", "tentative")
-        if status in folded
-    ]
+    """Return the states a question enumerates for its entities.
+
+    A question that filters on a status spells the alternatives out, so the
+    document's own vocabulary for them comes from the question rather than
+    from a list of statuses written into the code.
+    """
+    match = _DESCRIBED_AS_RE.search(question)
+    if not match:
+        return []
+    parts = re.split(r"\s*,\s*(?:or\s+)?|\s+or\s+", match.group("values"))
+    return [part.strip().casefold() for part in parts if part.strip()]
 
 
 def _mentioned_countries(
@@ -185,17 +197,15 @@ def _operation_steps(
             "latest",
         )
     )
-    entity_count_nouns = (
-        "how many projects",
-        "how many stations",
-        "how many parks",
-        "how many countries",
-        "how many entries",
-        "how many items",
-        "how many figures",
-    )
+    # "How many <entities>" counts records. What that noun is comes from the
+    # document's own label for its records, plus the words any question uses
+    # for rows of a table.
+    entity_nouns = {"entries", "entry", "items", "records", "figures"}
+    label = (document.entity_label if document else "").casefold()
+    if label:
+        entity_nouns |= {label, f"{label}s"}
     is_count = folded.startswith("counting ") or any(
-        phrase in folded for phrase in entity_count_nouns
+        f"how many {noun}" in folded for noun in entity_nouns
     ) or (
         "how many" in folded
         and "by how many" not in folded

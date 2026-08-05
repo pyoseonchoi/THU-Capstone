@@ -161,18 +161,20 @@ def _is_record_title(line: str) -> bool:
         return False
     if folded in _TITLE_EXCLUSIONS or _is_fact_section_title(text):
         return False
-    return bool(_heading(line)) or any(
-        term in folded
-        for term in (
-            "park",
-            "station",
-            "observatory",
-            "laboratory",
-            "centre",
-            "center",
-            "institute",
-        )
-    )
+    # A title that is not marked up as a heading is recognised by how it is
+    # set rather than by what it is called: names are capitalised and prose is
+    # not, which holds whatever the document is about.
+    return bool(_heading(line)) or _is_name_cased(text)
+
+
+def _is_name_cased(text: str) -> bool:
+    """Report whether a line is capitalised the way a name is, not a sentence."""
+    words = [word for word in re.findall(r"[^\W\d_]+", text, re.UNICODE) if len(word) > 2]
+    if not words:
+        return False
+    capitalised = sum(1 for word in words if word[:1].isupper())
+    # One lowercase particle ("of", "del", "i") is normal inside a name.
+    return capitalised >= max(1, len(words) - 1)
 
 
 def _find_country(record_text: str) -> str:
