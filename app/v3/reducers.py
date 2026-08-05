@@ -306,10 +306,13 @@ def reduce_mapped_structure(
         value = _candidate_number(candidate)
         if value is None:
             continue
-        # A figure the mapper labelled with this field but stated in another
-        # unit than the parsed rows use is a misread of some other number on
-        # the page, and one such value is enough to take over an extremum.
-        if expected_unit and candidate.unit.casefold() != expected_unit:
+        # A figure stated in a different unit than the parsed rows use is a
+        # misread of some other number on the page, and one such value is
+        # enough to take over an extremum. Saying no unit at all contradicts
+        # nothing, and rejecting those would discard every row the mapper
+        # recovered for a record the parser missed.
+        stated = candidate.unit.casefold().strip()
+        if expected_unit and stated and stated != expected_unit:
             continue
         rows[candidate.record_id] = _Row(
             entity=candidate.entity or candidate.record_id,

@@ -15,39 +15,6 @@ from app.v3.models import (
 )
 from app.v3.question_compiler import _target_field
 
-_COUNTRY_NAMES = (
-    "Albania",
-    "Austria",
-    "Bulgaria",
-    "Croatia",
-    "Denmark",
-    "England",
-    "Estonia",
-    "Finland",
-    "France",
-    "Germany",
-    "Greece",
-    "Hungary",
-    "Iceland",
-    "Ireland",
-    "Italy",
-    "Latvia",
-    "Lithuania",
-    "Montenegro",
-    "Norway",
-    "Poland",
-    "Portugal",
-    "Romania",
-    "Scotland",
-    "Slovakia",
-    "Slovenia",
-    "Spain",
-    "Sweden",
-    "Switzerland",
-    "Ukraine",
-    "Wales",
-)
-
 
 def _facts(document: CompiledDocument, field: str) -> list[tuple[CompiledRecord, NumberFact]]:
     return [
@@ -104,6 +71,21 @@ def _extreme_word(argmin: bool, candidates: list[tuple[CompiledRecord, NumberFac
     return "lowest" if argmin else "highest"
 
 
+_AREA_UNIT_RE = re.compile(r"\bsq\b|square|²|\bha\b|hectare|acre", re.IGNORECASE)
+
+
+def _same_dimension(one: str, other: str) -> bool:
+    """Report whether two units measure the same kind of quantity.
+
+    A question about a value "reported in different units" means the same
+    quantity written another way, such as an area in square miles beside
+    areas in square kilometres. A length sitting in an area column is not a
+    unit choice; it is a misread, and answering with it names the wrong
+    record with full confidence.
+    """
+    return bool(_AREA_UNIT_RE.search(one)) == bool(_AREA_UNIT_RE.search(other))
+
+
 def _has_mixed_area_units(candidates: list[tuple[CompiledRecord, NumberFact]]) -> bool:
     """Report whether the rows state areas in more than one unit."""
     units = {fact.unit.casefold() for _, fact in candidates if fact.unit}
@@ -144,15 +126,14 @@ def _country_mentions(
     question: str,
     document: CompiledDocument | None = None,
 ) -> list[str]:
+    """Return the registry's own group values that the question names."""
+    if document is None:
+        return []
     folded = question.casefold()
-    candidates = list(_COUNTRY_NAMES)
-    if document is not None:
-        candidates.extend(record.country for record in document.records if record.country)
-    return [
-        country
-        for country in dict.fromkeys(candidates)
-        if country.casefold() in folded
-    ]
+    groups = dict.fromkeys(
+        record.country for record in document.records if record.country
+    )
+    return [group for group in groups if group.casefold() in folded]
 
 
 def _fact_evidence(record: CompiledRecord, fact: NumberFact) -> str:
@@ -1085,7 +1066,9 @@ def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> Execution
             continue
         common = counts.most_common(1)[0][0]
         outliers = [
-            (record, fact) for record, fact in candidates if fact.unit and fact.unit != common
+            (record, fact)
+            for record, fact in candidates
+            if fact.unit and fact.unit != common and _same_dimension(fact.unit, common)
         ]
         if len(outliers) == 1:
             break
