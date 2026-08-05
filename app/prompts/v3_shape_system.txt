@@ -32,6 +32,16 @@ Shapes:
 - synthesis — anything else: open questions, questions about how the document
   treats a theme, and questions no listed field measures.
 
+For every question, whatever its shape, also return search_terms: words and
+short phrases a document would use when writing about what the question asks
+for, which need not be the question's own words. A question about parks that
+cross an international border should offer wording such as "crosses into",
+"straddles the border", "shared with", "twinned with", and the names of
+neighbouring places if the question implies them. These are used to find
+passages the question's own wording would miss. Return between three and eight
+of them, or an empty list when the question is about the document's structure
+rather than its subject.
+
 Rules:
 
 - field must be one of the field identifiers given to you, exactly. If the
@@ -60,6 +70,7 @@ Return JSON only:
       "claim_scope": "",
       "event": "",
       "subject": "",
+      "search_terms": [],
       "confident": true
     }
   ]

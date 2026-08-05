@@ -207,6 +207,11 @@ class ShapePlan(BaseModel):
     # What a DATED_EVENT question asks about, and whose event it is.
     event: str = ""
     subject: str = ""
+    # Words a document would use for what the question asks about, which need
+    # not be the question's own words. A question about an international
+    # border reaches a chapter that says "crosses into Kaliningrad" only
+    # through wording like this.
+    search_terms: list[str] = Field(default_factory=list)
     # Whether the model was sure enough for Python to act on this.
     confident: bool = False
 

@@ -232,6 +232,12 @@ def _validated_plan(
             if canonical and canonical not in groups:
                 groups.append(canonical)
 
+    raw_terms = item.get("search_terms", [])
+    search_terms = [
+        str(term).strip()[:40]
+        for term in (raw_terms if isinstance(raw_terms, list) else [])
+        if str(term).strip()
+    ][:10]
     comparator = str(item.get("comparator", "")).strip().casefold()
     direction = str(item.get("direction", "")).strip().casefold()
     threshold = item.get("threshold")
@@ -243,6 +249,7 @@ def _validated_plan(
         threshold=float(threshold) if isinstance(threshold, (int, float)) else None,
         direction=direction if direction in _DIRECTIONS else "",
         claim_scope=str(item.get("claim_scope", "")).strip()[:80],
+        search_terms=search_terms,
         event=str(item.get("event", "")).strip()[:120],
         subject=str(item.get("subject", "")).strip()[:120],
         confident=bool(item.get("confident", False)),

@@ -219,3 +219,50 @@ def test_nothing_is_revisited_when_the_scan_found_evidence_everywhere():
     )
 
     assert FullScanPipeline._dismissed_matches(plan, document, results) == []
+
+
+def test_router_wording_reaches_a_record_the_question_words_miss():
+    """The document and the question name the same thing differently.
+
+    A chapter that records a climbing first writes "first ascent"; a question
+    asking about a climbing "first" shares no rare word with it. The router
+    reads the question and offers the wording a document would use, which is
+    the only thing that reaches such a record.
+    """
+    from app.pipeline import FullScanPipeline
+
+    document = _document()
+    document.records[2].text += " The first ascent was completed in 1798."
+    results = [
+        V3MapResult(question_id="q", record_id=record.record_id, status="no_evidence")
+        for record in document.records
+    ]
+    plan = V3QuestionPlan(
+        question_id="q",
+        question="Which entry records a climbing first, and when?",
+        category="cross_section",
+        strategy=Strategy.HIERARCHICAL_SYNTHESIS,
+        shape_plan=ShapePlan(
+            shape=QuestionShape.RELATION,
+            search_terms=["first ascent", "pioneering climb"],
+            confident=True,
+        ),
+    )
+
+    revisited = FullScanPipeline._dismissed_matches(plan, document, results)
+
+    assert [record.record_id for record in revisited] == ["record-003"]
+
+
+def test_wording_the_document_uses_everywhere_does_not_decide_the_order():
+    """Common wording is kept for reach but counted for less."""
+    from app.pipeline import _weighted_phrases
+
+    document = _document()
+    for record in document.records:
+        record.text += " The park has a summit."
+    document.records[0].text += " The first ascent was in 1864."
+
+    weights = dict(_weighted_phrases(["summit", "first ascent"], document.records))
+
+    assert weights["first ascent"] > weights["summit"]

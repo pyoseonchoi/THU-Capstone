@@ -79,6 +79,28 @@ _QUESTION_STOPWORDS = frozenset({
 })
 
 
+def _weighted_phrases(
+    terms: list[str],
+    records: list[CompiledRecord],
+) -> list[tuple[str, int]]:
+    """Weigh the router's wording by how far it narrows the document.
+
+    "First ascent" appears in two chapters and points at them; "highest"
+    appears in most and points almost nowhere. Dropping the common wording
+    would lose the only reach some questions have, so it is kept and counted
+    for less than the wording that singles a record out.
+    """
+    folded = [record.text.casefold() for record in records]
+    ceiling = max(1, len(folded) * _MAX_TERM_SHARE)
+    weighted: list[tuple[str, int]] = []
+    for phrase in (term.casefold() for term in terms if len(term) >= 4):
+        reach = sum(phrase in text for text in folded)
+        if not reach:
+            continue
+        weighted.append((phrase, _MIN_DISMISSED_TERMS if reach <= ceiling else 1))
+    return weighted
+
+
 def _distinctive_terms(text: str, records: list[CompiledRecord]) -> set[str]:
     """Return the question's words that could locate it within this document.
 
@@ -470,7 +492,12 @@ class FullScanPipeline:
             return []
         records = all_mapping_records(compiled)
         wanted = _distinctive_terms(plan.question, records)
-        if len(wanted) < 2:
+        # The router read the question and offered the wording a document
+        # would use for what it asks about. A chapter that says "crosses into
+        # Kaliningrad" shares no rare word with a question about international
+        # borders, and only that wording can reach it.
+        phrases = _weighted_phrases(plan.shape_plan.search_terms, records)
+        if len(wanted) < 2 and not phrases:
             return []
         scored: list[tuple[int, CompiledRecord]] = []
         for record in records:
@@ -478,6 +505,7 @@ class FullScanPipeline:
                 continue
             folded = record.text.casefold()
             matched = sum(term in folded for term in wanted)
+            matched += sum(weight for phrase, weight in phrases if phrase in folded)
             if matched >= _MIN_DISMISSED_TERMS:
                 scored.append((matched, record))
         scored.sort(key=lambda item: (-item[0], item[1].ordinal))
