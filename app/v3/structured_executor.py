@@ -1280,43 +1280,6 @@ def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> Execution
     )
 
 
-def _largest_claim_conflict(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    if not _registry_is_trusted(document):
-        return None
-    folded = plan.question.casefold()
-    if "largest in its country" not in folded:
-        return None
-    for record in document.records:
-        claim = _sentence_with(record.text, "largest national park")
-        area = next((fact for fact in record.number_facts if fact.field == "area"), None)
-        if not claim or not area or not record.country:
-            continue
-        peers = [
-            (other, fact)
-            for other, fact in _facts(document, "area")
-            if other.country == record.country and _area_km2(fact) > _area_km2(area)
-        ]
-        if not peers:
-            continue
-        other, other_area = max(peers, key=lambda pair: _area_km2(pair[1]))
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"The book calls {record.title} {record.country}'s largest national park "
-                f"and gives it as {area.raw_value} {area.unit}, but {other.title} is listed "
-                f"at {other_area.raw_value} {other_area.unit}, which is larger."
-            ),
-            evidence=[claim, _fact_evidence(record, area), _fact_evidence(other, other_area)],
-            source_pages=sorted({area.page, other_area.page}),
-            complete=True,
-            strategy=plan.strategy,
-        )
-    return None
-
-
 def execute_structured(
     plan: V3QuestionPlan,
     document: CompiledDocument,
@@ -1337,7 +1300,6 @@ def execute_structured(
         _superlative_answer,
         _needle_answer,
         _unit_outlier,
-        _largest_claim_conflict,
     ):
         result = executor(plan, document)
         if result is not None and result.complete:
