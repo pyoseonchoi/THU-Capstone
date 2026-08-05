@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 
 from app.schemas import DocumentPage
+from app.v3.flat_table import parse_flat_table
 from app.v3.models import CompiledTable, CompiledTableRow, ContentsEntry
 
 _TABLE_MARKER_RE = re.compile(r"\bT\s*A\s*B\s*L\s*E\s+(?P<number>\d{1,3})\b", re.I)
@@ -257,6 +258,68 @@ def compile_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
             warnings=warnings,
         ))
     return tables
+
+
+_FLAT_CAPTION_RE = re.compile(
+    r"(?P<caption>(?:Annex\s+)?Table\s+(?P<number>\d{1,3})(?:\.[A-Za-z0-9]+)*\.)\s+",
+)
+
+
+def compile_flat_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
+    """Compile tables whose layout conversion replaced with running text.
+
+    The run-based reader looks for a page whose top announces a table. A
+    report that numbers its tables inside a chapter puts the caption wherever
+    the text reaches it, so these are found by scanning for the caption and
+    reading what follows it.
+    """
+    tables: list[CompiledTable] = []
+    seen: set[str] = set()
+    for page in pages:
+        for match in _FLAT_CAPTION_RE.finditer(page.text):
+            names, parsed = parse_flat_table(page.text[match.end():])
+            if not parsed:
+                continue
+            caption = match.group("caption").strip().rstrip(".")
+            if caption in seen:
+                continue
+            seen.add(caption)
+            columns = names[1:]
+            rows = [
+                CompiledTableRow(
+                    row_id=f"{caption}-r{index}".replace(" ", "-").casefold(),
+                    label=label,
+                    page=page.page_number,
+                    values={
+                        column: value
+                        for column, value in zip(columns, values)
+                        if value is not None
+                    },
+                    quote=f"{label} " + " ".join(
+                        f"{value:g}" for value in values if value is not None
+                    ),
+                )
+                for index, (label, values) in enumerate(parsed, start=1)
+            ]
+            unique = len({row.label.casefold() for row in rows}) == len(rows)
+            tables.append(CompiledTable(
+                table_id=caption.replace(" ", "-").casefold(),
+                number=int(match.group("number")),
+                title=f"{caption} {_flat_title(page.text[match.end():])}".strip(),
+                page_start=page.page_number,
+                page_end=page.page_number,
+                columns=[names[0], *columns],
+                rows=rows,
+                raw_text=page.text[match.start(): match.end() + 2000],
+                trusted=unique,
+                warnings=[] if unique else ["Flattened table rows repeat a label"],
+            ))
+    return tables
+
+
+def _flat_title(body: str) -> str:
+    """Return the caption's own title, which precedes the column headings."""
+    return re.split(r"(?<=[a-z.)])\s+(?=[A-Z])", body.strip())[0][:90].strip()
 
 
 def compile_contents(

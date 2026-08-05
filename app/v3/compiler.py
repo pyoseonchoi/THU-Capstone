@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from app.reduction.normalizer import parse_number
 from app.schemas import DocumentPage
 from app.v3.models import CompiledDocument, CompiledRecord, NumberFact
-from app.v3.table_compiler import compile_contents, compile_tables
+from app.v3.table_compiler import compile_contents, compile_flat_tables, compile_tables
 
 COMPILER_VERSION = "v3.3"
 
@@ -869,6 +869,10 @@ def compile_document(
 ) -> CompiledDocument:
     """Compile a trusted repeated-entity registry or exhaustive fallback segments."""
     tables = compile_tables(pages)
+    known = {table.number for table in tables if table.rows}
+    tables += [
+        table for table in compile_flat_tables(pages) if table.number not in known
+    ]
     contents_text, contents_pages, contents_entries, contents_trusted = compile_contents(pages)
     inline = _compile_inline_profiles(document_id, pages)
     if inline is not None:
