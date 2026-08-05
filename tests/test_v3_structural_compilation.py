@@ -11,7 +11,7 @@ from app.llm.base import LLMResponse
 from app.llm.usage_tracker import UsageTracker
 from app.schemas import DocumentPage, QuestionRequest
 from app.v3.compiler import compile_document
-from app.v3.models import CompiledDocument, ContentsEntry
+from app.v3.models import CompiledDocument, CompiledRecord, ContentsEntry
 from app.v3.question_compiler import compile_question
 from app.v3.structure_augmenter import StructureAugmenter
 from app.v3.structured_executor import execute_structured
@@ -286,3 +286,82 @@ async def test_contents_augmentation_rejects_identifiers_not_in_source(tmp_path)
 
     assert document.contents_trusted is False
     assert "Contents index failed source validation" in document.warnings
+
+
+def _misled_record(record_id: str, ordinal: int, bad_title: str, text: str) -> CompiledRecord:
+    return CompiledRecord(
+        record_id=record_id, ordinal=ordinal, title=bad_title,
+        page_start=ordinal, page_end=ordinal, anchor_page=ordinal,
+        text=text,
+    )
+
+
+@pytest.mark.asyncio
+async def test_title_resolution_replaces_a_layout_fooled_title_with_a_grounded_one(tmp_path):
+    """A heading-formatted subsection must not keep out-ranking the real,
+    non-heading chapter title once the LLM fallback reads the excerpt.
+
+    Uses a fictional research-station guide -- not the real practice
+    document -- to prove the fix generalizes by pattern (a chapter title
+    that isn't heading-formatted, sitting before heading-formatted
+    subsections) rather than by any literal name from one document.
+    """
+    text = (
+        "[Page 5]\nFrostwell Research Station\n\n39 KESTRIA\n\n"
+        "Frostwell sits on a windswept plateau studied for its lichen fields.\n\n"
+        "## Stay here...\n\n## Hollow Pine Lodge\n\nA quiet cabin near the treeline.\n\n"
+        "## Do this!\n\n## Ice Cave Tours\n\nGuided tours of the plateau's caves."
+    )
+    router = _FakeRouter({"title": "Frostwell Research Station"})
+    document = CompiledDocument(
+        document_id="stations", record_kind="repeated_entity",
+        records=[_misled_record("r01", 1, "Ice Cave Tours", text)],
+        registry_signals={"contents_entries": 0},
+    )
+
+    await StructureAugmenter(
+        router, UsageTracker(), Settings(data_dir=tmp_path),
+    ).augment(document)
+
+    assert document.records[0].title == "Frostwell Research Station"
+    assert router.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_title_resolution_rejects_a_title_not_present_in_the_excerpt(tmp_path):
+    """A hallucinated title must not overwrite the (imperfect) heuristic one."""
+    text = (
+        "[Page 9]\nHollow Pine Lodge\n\nA quiet cabin near the treeline.\n\n"
+        "## Ice Cave Tours\n\nGuided tours of the plateau's caves."
+    )
+    router = _FakeRouter({"title": "Sunview Alpine Institute"})
+    document = CompiledDocument(
+        document_id="stations", record_kind="repeated_entity",
+        records=[_misled_record("r01", 1, "Ice Cave Tours", text)],
+        registry_signals={"contents_entries": 0},
+    )
+
+    await StructureAugmenter(
+        router, UsageTracker(), Settings(data_dir=tmp_path),
+    ).augment(document)
+
+    assert document.records[0].title == "Ice Cave Tours"
+
+
+@pytest.mark.asyncio
+async def test_title_resolution_skips_records_that_already_look_like_entities(tmp_path):
+    router = _FakeRouter({"title": "should never be read"})
+    document = CompiledDocument(
+        document_id="stations", record_kind="repeated_entity",
+        records=[_misled_record(
+            "r01", 1, "Frostwell Research Station", "[Page 5]\nFrostwell Research Station\n",
+        )],
+        registry_signals={"contents_entries": 0},
+    )
+
+    await StructureAugmenter(
+        router, UsageTracker(), Settings(data_dir=tmp_path),
+    ).augment(document)
+
+    assert document.records[0].title == "Frostwell Research Station"
+    assert router.calls == 0

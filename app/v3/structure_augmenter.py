@@ -13,12 +13,16 @@ from app.config import Settings
 from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.logging_config import get_logger
+from app.v3.compiler import _looks_like_entity_title
 from app.v3.models import CompiledDocument, ContentsEntry
 
 logger = get_logger("v3.structure_augmenter")
 PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "v3_contents_system.txt"
+TITLE_PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "v3_title_system.txt"
 _GROUPS = ("boxes", "spotlights", "figures", "tables")
 _AUGMENTER_VERSION = "v3"
+_TITLE_AUGMENTER_VERSION = "v1"
+_TITLE_EXCERPT_CHARS = 2000
 
 
 def _json_object(raw: str) -> dict:
@@ -60,8 +64,11 @@ class StructureAugmenter:
         self._tracker = tracker
         self._settings = settings
         self._prompt = PROMPT_FILE.read_text(encoding="utf-8")
+        self._title_prompt = TITLE_PROMPT_FILE.read_text(encoding="utf-8")
         self._cache_dir = settings.cache_dir / "v3" / "structure"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._title_cache_dir = settings.cache_dir / "v3" / "titles"
+        self._title_cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _needed(self, document: CompiledDocument) -> bool:
         compact = re.sub(r"\s+", "", document.contents_text).casefold()
@@ -165,7 +172,94 @@ class StructureAugmenter:
         extracted = await asyncio.gather(*(extract(group) for group in _GROUPS))
         return {group: values for group, values in extracted}
 
+    def _title_cache_path(self, document: CompiledDocument, record) -> Path:
+        model = self._router.get_model("planner")
+        payload = "\n".join((
+            _TITLE_AUGMENTER_VERSION,
+            document.document_id,
+            record.record_id,
+            model,
+            hashlib.sha256(self._title_prompt.encode("utf-8")).hexdigest(),
+            hashlib.sha256(record.text.encode("utf-8")).hexdigest(),
+        ))
+        return self._title_cache_dir / f"{hashlib.sha256(payload.encode()).hexdigest()}.json"
+
+    async def _resolve_one_title(self, document: CompiledDocument, record) -> None:
+        excerpt = record.text[:_TITLE_EXCERPT_CHARS]
+        cache_path = self._title_cache_path(document, record)
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                title = str(cached.get("title", "")).strip()
+            except (OSError, json.JSONDecodeError):
+                title = ""
+            if title and _identifier_exists(title, excerpt):
+                record.title = title
+                return
+
+        try:
+            response = await self._router.chat(
+                [
+                    {"role": "system", "content": self._title_prompt},
+                    {"role": "user", "content": excerpt},
+                ],
+                stage="planner",
+                temperature=0.0,
+                max_tokens=200,
+                json_mode=True,
+                question_ids=[],
+            )
+            if response.usage:
+                self._tracker.record(response.usage)
+            title = str(_json_object(response.content).get("title", "")).strip()
+        except Exception as exc:
+            logger.warning("Title resolution failed for %s: %s", record.record_id, exc)
+            return
+
+        if not title or not _identifier_exists(title, excerpt):
+            return
+        cache_path.write_text(
+            json.dumps({"title": title}, ensure_ascii=False), encoding="utf-8"
+        )
+        record.title = title
+
+    async def resolve_uncertain_titles(self, document: CompiledDocument) -> CompiledDocument:
+        """Re-resolve titles a layout heuristic could not confidently name.
+
+        `compile_document` picks a title from nearby text using layout
+        signals (headings, rarity, position). Those signals can be fooled by
+        a document whose real chapter title is not heading-formatted while a
+        sibling subsection (a hotel listing, a trail name) is -- the
+        heuristic then has no way to tell them apart. Rather than add more
+        layout rules, hand the ambiguous excerpt to an LLM, which can read it
+        the way a person would: the real chapter title reads as an entity
+        name, not as a hotel ad or an activity blurb. Every returned title
+        must be a literal substring of the excerpt it was read from, so a
+        hallucinated name is discarded rather than trusted.
+        """
+        if document.record_kind != "repeated_entity":
+            return document
+        uncertain = [
+            record for record in document.records
+            if not _looks_like_entity_title(record.title)
+        ]
+        if not uncertain:
+            return document
+        await asyncio.gather(
+            *(self._resolve_one_title(document, record) for record in uncertain)
+        )
+        unique_titles = len({record.title.casefold() for record in document.records})
+        toc_count = document.registry_signals.get("contents_entries", 0)
+        document.registry_signals["unique_titles"] = unique_titles
+        document.registry_trusted = (
+            unique_titles == len(document.records)
+            and (not toc_count or toc_count == len(document.records))
+            and not any(record.title.startswith("Record ") for record in document.records)
+        )
+        return document
+
     async def augment(self, document: CompiledDocument) -> CompiledDocument:
+        document = await self.resolve_uncertain_titles(document)
         if document.contents_trusted or not self._needed(document):
             return document
         minimum_entries = max(4, len(document.contents_entries))

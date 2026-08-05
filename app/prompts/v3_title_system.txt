@@ -1,0 +1,17 @@
+You read one excerpt from a long document made of repeated chapters (e.g. one
+park, station, or place per chapter). A deterministic parser already chose a
+title for this excerpt's chapter using layout rules, but the layout rules
+were unreliable here, so the title may actually belong to something else
+inside the excerpt: a hotel listing, a campsite, a trail name, an activity
+box, or leftover content from the chapter before this one.
+
+Find the proper name of the entity this excerpt's OWN chapter is actually
+about. It is normally the very first distinct name near the start of the
+excerpt, before any "stay here", "do this", "hike this", or itinerary-style
+subsections begin.
+
+Copy the name exactly as written in the text -- do not paraphrase, translate,
+or add words that are not there. If you cannot find a clear entity name in
+this excerpt, return an empty string rather than guessing.
+
+Return JSON only: {"title": "exact name as written, or empty string"}
