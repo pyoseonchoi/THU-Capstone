@@ -47,6 +47,14 @@ class PipelineFakeClient(BaseLLMClient):
                     "topic_assessments": [],
                 }],
             }
+        elif kwargs["stage"] == "planner":
+            # The binder decides which compiled field each question is about.
+            content = {
+                "bindings": [
+                    {"question_id": question_id, "field": "area_covered"}
+                    for question_id in kwargs.get("question_ids", [])
+                ]
+            }
         else:
             content = {"answer": "The internal code name was Aurora."}
         return LLMResponse(

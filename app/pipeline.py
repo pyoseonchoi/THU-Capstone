@@ -339,7 +339,12 @@ class FullScanPipeline:
         expected_record_ids: set[str],
         compiled: CompiledDocument,
     ) -> tuple[ExecutionResult, list[V3MapResult]]:
-        result = self._reduced_result(plan, question_results, expected_record_ids)
+        result = self._reduced_result(
+            plan,
+            question_results,
+            expected_record_ids,
+            compiled,
+        )
 
         if result is not None:
             return result, question_results
@@ -376,6 +381,7 @@ class FullScanPipeline:
                     plan,
                     question_results,
                     expected_record_ids,
+                    compiled,
                 )
                 if result is not None:
                     return result, question_results
@@ -442,6 +448,7 @@ class FullScanPipeline:
         plan: V3QuestionPlan,
         question_results: list[V3MapResult],
         expected_record_ids: set[str],
+        compiled: CompiledDocument | None = None,
     ) -> ExecutionResult | None:
         if plan.strategy == Strategy.ABSENCE_MATRIX:
             result = reduce_absence(plan, question_results, expected_record_ids)
@@ -452,7 +459,7 @@ class FullScanPipeline:
                 allow_partial=True,
             )
         packet = build_evidence_packet(plan, question_results, expected_record_ids)
-        return reduce_mapped_structure(plan, packet)
+        return reduce_mapped_structure(plan, packet, compiled)
 
     @staticmethod
     def _lexical_repair_records(

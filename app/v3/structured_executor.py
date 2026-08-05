@@ -1016,9 +1016,15 @@ def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> Execution
     # The question does not say which measurement disagrees, so look for the
     # field whose rows state one unit everywhere except in a single record.
     target = plan.target_fields[0] if plan.target_fields else ""
-    fields = [target] if target else sorted(
-        {fact.field for record in document.records for fact in record.number_facts}
+    # A question about a measurement every record reports is about a widely
+    # reported field, so try those first; a one-off metric that happens to
+    # disagree on units would otherwise win by being alphabetically earlier.
+    coverage = Counter(
+        fact.field for record in document.records for fact in record.number_facts
     )
+    fields = [target] if target else [
+        field for field, _ in sorted(coverage.items(), key=lambda item: (-item[1], item[0]))
+    ]
     for field in fields:
         candidates = _facts(document, field)
         counts = Counter(fact.unit for _, fact in candidates if fact.unit)
@@ -1055,14 +1061,20 @@ def _largest_claim_conflict(
     folded = plan.question.casefold()
     if "largest in its country" not in folded:
         return None
+    # The measured quantity is whichever field the question was bound to;
+    # without one there is nothing to compare the boast against.
+    field = plan.target_fields[0] if plan.target_fields else ""
+    if not field:
+        return None
+    entity = document.entity_label or "national park"
     for record in document.records:
-        claim = _sentence_with(record.text, "largest national park")
-        area = next((fact for fact in record.number_facts if fact.field == "area"), None)
+        claim = _sentence_with(record.text, f"largest {entity}")
+        area = next((fact for fact in record.number_facts if fact.field == field), None)
         if not claim or not area or not record.country:
             continue
         peers = [
             (other, fact)
-            for other, fact in _facts(document, "area")
+            for other, fact in _facts(document, field)
             if other.country == record.country and _area_km2(fact) > _area_km2(area)
         ]
         if not peers:
@@ -1071,7 +1083,7 @@ def _largest_claim_conflict(
         return ExecutionResult(
             question_id=plan.question_id,
             answer=(
-                f"The book calls {record.title} {record.country}'s largest national park "
+                f"The book calls {record.title} {record.country}'s largest {entity} "
                 f"and gives it as {area.raw_value} {area.unit}, but {other.title} is listed "
                 f"at {other_area.raw_value} {other_area.unit}, which is larger."
             ),

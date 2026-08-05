@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass
 
 from app.field_names import canonical_field_name
 from app.reduction.normalizer import parse_number
 from app.v3.models import (
+    CompiledDocument,
     EvidenceCandidate,
     EvidencePacket,
     ExecutionResult,
@@ -17,6 +19,28 @@ from app.v3.models import (
 )
 
 TERMINAL_STATUSES = {"evidence_found", "no_evidence"}
+
+
+@dataclass(frozen=True)
+class _Row:
+    """One record's value for the field a structured question targets."""
+
+    entity: str
+    value: float
+    unit: str
+    page: int
+    quote: str
+
+
+def _dominant_unit(rows) -> str:
+    """Return the unit the parsed rows agree on, if they agree at all."""
+    units = Counter(row.unit.casefold() for row in rows if row.unit)
+    if not units:
+        return ""
+    unit, count = units.most_common(1)[0]
+    return unit if count >= max(2, sum(units.values()) * 0.6) else ""
+
+
 COVERED_STATUSES = {*TERMINAL_STATUSES, "uncertain"}
 _CONCEPT_STOPWORDS = {
     "across",
@@ -277,8 +301,17 @@ def _candidate_number(candidate: EvidenceCandidate) -> float | None:
 def reduce_mapped_structure(
     plan: V3QuestionPlan,
     packet: EvidencePacket,
+    document: CompiledDocument | None = None,
 ) -> ExecutionResult | None:
-    """Apply count/argmax in Python when compile-time facts were unavailable."""
+    """Apply count/argmax over compiled facts, topped up by mapped evidence.
+
+    The compiler parses fact cards deterministically and quotes what it binds,
+    so where it bound a value that value is exact. The mapper re-reads prose
+    with a small model and misses rows that plainly state the figure, so using
+    it to re-derive what was already parsed throws away the reliable half of
+    the evidence. Compiled facts are therefore authoritative per record, and
+    mapped evidence only covers records the compiler left empty.
+    """
     if plan.strategy != Strategy.STRUCTURED_REDUCE or not packet.complete:
         return None
     target = str(plan.metadata.get("target_field", ""))
@@ -287,39 +320,65 @@ def reduce_mapped_structure(
     if not target or operation not in {"count", "argmax"}:
         return None
 
-    candidates: list[tuple[EvidenceCandidate, float]] = []
+    rows: dict[str, _Row] = {}
+    if document is not None:
+        for record in document.records:
+            fact = next(
+                (item for item in record.number_facts if item.field == target),
+                None,
+            )
+            if fact is not None:
+                rows[record.record_id] = _Row(
+                    entity=record.title or record.record_id,
+                    value=fact.value,
+                    unit=fact.unit,
+                    page=fact.page,
+                    quote=fact.quote,
+                )
+    expected_unit = _dominant_unit(rows.values())
     for candidate in packet.evidence:
+        if candidate.record_id in rows:
+            continue
         if canonical_field_name(candidate.field) != target:
             continue
         value = _candidate_number(candidate)
-        if value is not None:
-            candidates.append((candidate, value))
-    if not candidates:
+        if value is None:
+            continue
+        # A figure the mapper labelled with this field but stated in another
+        # unit than the parsed rows use is a misread of some other number on
+        # the page, and one such value is enough to take over an extremum.
+        if expected_unit and candidate.unit.casefold() != expected_unit:
+            continue
+        rows[candidate.record_id] = _Row(
+            entity=candidate.entity or candidate.record_id,
+            value=value,
+            unit=candidate.unit,
+            page=candidate.page,
+            quote=candidate.exact_quote,
+        )
+    if not rows:
         return None
 
     if operation == "count":
         selected = [
-            (candidate, value)
-            for candidate, value in candidates
-            if threshold is None or value >= float(threshold)
+            row
+            for row in rows.values()
+            if threshold is None or row.value >= float(threshold)
         ]
-        entities = list(
-            dict.fromkeys(candidate.entity or candidate.record_id for candidate, _ in selected)
-        )
+        entities = list(dict.fromkeys(row.entity for row in selected))
         answer = f"{len(entities)} entities qualify: {', '.join(entities)}."
-        used = [candidate for candidate, _ in selected]
+        used = selected
     else:
-        candidate, value = max(candidates, key=lambda item: item[1])
-        entity = candidate.entity or candidate.record_id
-        unit = f" {candidate.unit}" if candidate.unit else ""
-        answer = f"{entity} has the maximum reported value: {value:g}{unit}."
-        used = [candidate]
+        best = max(rows.values(), key=lambda row: row.value)
+        unit = f" {best.unit}" if best.unit else ""
+        answer = f"{best.entity} has the maximum reported value: {best.value:g}{unit}."
+        used = [best]
 
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
-        evidence=[item.exact_quote for item in used],
-        source_pages=sorted({item.page for item in used}),
+        evidence=[row.quote for row in used],
+        source_pages=sorted({row.page for row in used}),
         complete=True,
         strategy=plan.strategy,
     )

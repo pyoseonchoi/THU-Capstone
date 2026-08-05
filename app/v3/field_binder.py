@@ -75,13 +75,19 @@ class FieldBinder:
         self,
         questions: list[QuestionRequest],
         document: CompiledDocument,
-    ) -> dict[str, str]:
-        """Return question id to field, omitting questions with no field."""
+    ) -> dict[str, str] | None:
+        """Return question id to field, or None when nothing was decided.
+
+        An empty mapping and a missing mapping mean different things: the
+        first says the model read the field list and found none that answers
+        the question, which callers must respect. None says no verdict was
+        reached at all, leaving callers free to fall back.
+        """
         if not self._settings.enable_field_binding or not questions:
-            return {}
+            return None
         fields = field_descriptions(document)
         if not fields:
-            return {}
+            return None
         allowed = {field for field, _, _ in fields}
         catalog = "\n".join(
             f"- {field} | document wording: \"{label}\" | "
@@ -93,7 +99,7 @@ class FieldBinder:
         if payload is None:
             payload = await self._ask(questions, catalog)
             if payload is None:
-                return {}
+                return None
             self._save_cache(key, payload)
         bindings: dict[str, str] = {}
         asked = {question.question_id for question in questions}

@@ -329,17 +329,23 @@ def _structured_metadata(
 def compile_question(
     question: QuestionRequest,
     document: CompiledDocument | None = None,
-    bound_field: str = "",
+    bound_field: str | None = None,
 ) -> V3QuestionPlan:
     """Compile a question into a validated strategy and operation sequence.
 
-    A caller that resolved the question against the document's own field list
-    passes the result as bound_field; it wins over wording-based matching,
-    which cannot tell a shared word from a shared meaning.
+    bound_field carries the verdict of a caller that resolved the question
+    against the document's own field list. An empty verdict is a real answer —
+    the document reports no such measurement — and must stand, because naming
+    some field anyway sends every later stage looking for the wrong column.
+    Only None means nothing decided, leaving wording to guess.
     """
     category = _normalize_category(question.category)
     folded = question.question.casefold()
-    target = bound_field or _target_field(question.question, document)
+    target = (
+        _target_field(question.question, document)
+        if bound_field is None
+        else bound_field
+    )
     if not target and "ranked" in folded and "group" in folded:
         target = "rank"
     operations = _operation_steps(question.question, category, target, document)
@@ -398,8 +404,11 @@ def compile_questions(
     document: CompiledDocument | None = None,
     bindings: dict[str, str] | None = None,
 ) -> list[V3QuestionPlan]:
-    resolved = bindings or {}
     return [
-        compile_question(question, document, resolved.get(question.question_id, ""))
+        compile_question(
+            question,
+            document,
+            None if bindings is None else bindings.get(question.question_id, ""),
+        )
         for question in questions
     ]

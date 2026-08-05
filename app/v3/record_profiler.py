@@ -28,7 +28,7 @@ from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.logging_config import get_logger
 from app.reduction.normalizer import parse_number
-from app.v3.compiler import all_mapping_records, field_id
+from app.v3.compiler import _is_title_like, all_mapping_records, field_id
 from app.v3.models import CompiledDocument, CompiledRecord, NumberFact
 from app.v3.source_text import json_payload, normalize_source
 
@@ -217,8 +217,11 @@ class RecordProfiler:
         source = normalize_source(record.text)
         name = str(payload.get("name", "")).strip()
         if name and normalize_source(name) in source:
-            unresolved = not record.title or record.title.startswith("Record ")
-            if unresolved:
+            # A placeholder is not the only unusable title: layout heuristics
+            # also pick up caption fragments and running heads that look like
+            # titles, and a name read from the record and checked against it
+            # is better evidence than either.
+            if not _titled(record):
                 record.title = name[:120]
         category = str(payload.get("category", "")).strip()
         if category and not record.country and normalize_source(category) in source:
@@ -380,6 +383,18 @@ class RecordProfiler:
             temporary.replace(path)
         except OSError as exc:
             logger.warning("Could not write profile cache: %s", exc)
+
+
+def _titled(record: CompiledRecord) -> bool:
+    """Report whether a record already carries a usable entity name."""
+    title = record.title.strip()
+    if not title or title.startswith("Record "):
+        return False
+    # An unfinished sentence or a fragment ending in an ellipsis is a caption
+    # or running head the layout pass mistook for a heading.
+    if title.endswith(("...", "…", ",", ":", ";")):
+        return False
+    return _is_title_like(title, set())
 
 
 def _needs_profiling(document: CompiledDocument) -> bool:
