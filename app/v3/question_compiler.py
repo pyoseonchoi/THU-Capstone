@@ -88,15 +88,19 @@ def _candidate_topics(question: str) -> list[str]:
         match = re.search(r"\bof\s+(.+?),\s+which\b", text, re.IGNORECASE)
         body = match.group(1) if match else ""
     if not body:
+        colon_match = re.search(r":\s*(.+)$", text, re.IGNORECASE | re.DOTALL)
+        if colon_match:
+            body = colon_match.group(1).strip().rstrip("?. ")
+    if not body:
         return []
     parts = [part.strip(" .") for part in re.split(r",\s*", body) if part.strip()]
-    if parts and parts[-1].casefold().startswith("and "):
-        parts[-1] = parts[-1][4:].strip()
-    elif len(parts) >= 3 and re.search(r"\s+and\s+", parts[-1], re.I):
-        left, right = re.split(r"\s+and\s+", parts[-1], maxsplit=1, flags=re.I)
+    if parts and re.match(r"^(?:and|or)\s+", parts[-1], re.I):
+        parts[-1] = re.sub(r"^(?:and|or)\s+", "", parts[-1], flags=re.I).strip()
+    elif len(parts) >= 3 and re.search(r"\s+(?:and|or)\s+", parts[-1], re.I):
+        left, right = re.split(r"\s+(?:and|or)\s+", parts[-1], maxsplit=1, flags=re.I)
         parts[-1:] = [left.strip(), right.strip()]
-    elif len(parts) == 1 and re.search(r"\s+and\s+", parts[0], re.I):
-        parts = [part.strip() for part in re.split(r"\s+and\s+", parts[0], flags=re.I)]
+    elif len(parts) == 1 and re.search(r"\s+(?:and|or)\s+", parts[0], re.I):
+        parts = [part.strip() for part in re.split(r"\s+(?:and|or)\s+", parts[0], flags=re.I)]
     return parts
 
 
@@ -322,7 +326,17 @@ def _structured_metadata(
         None,
     )
     table_match = re.search(r"\btable\s+(\d+)\b", question, re.I)
-    source_view = "contents" if "according to the contents" in question.casefold() else ""
+    folded_question = question.casefold()
+    mentions_contents_category = any(
+        category in folded_question
+        for category in ("figures", "tables", "boxes", "spotlights")
+    )
+    source_view = (
+        "contents"
+        if "according to the contents" in folded_question
+        or (mentions_contents_category and "chapter" in folded_question)
+        else ""
+    )
     return {
         "target_field": target,
         "threshold": _threshold(question),

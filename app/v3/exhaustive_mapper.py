@@ -434,7 +434,14 @@ class ExhaustiveMapper:
         remaining = [plan for plan in plans if plan not in isolated]
         batches: list[list[V3QuestionPlan]] = []
         batches.extend([[plan] for plan in isolated])
-        batches.extend(_chunks(remaining, self._settings.question_batch_size))
+        # Never mix strategies within one batch: a question's answer quality
+        # should not depend on which unrelated questions happen to share its
+        # question_batch_size grouping.
+        grouped_by_strategy: dict[Strategy, list[V3QuestionPlan]] = {}
+        for plan in remaining:
+            grouped_by_strategy.setdefault(plan.strategy, []).append(plan)
+        for strategy_plans in grouped_by_strategy.values():
+            batches.extend(_chunks(strategy_plans, self._settings.question_batch_size))
         return batches
 
     async def _map_batch(

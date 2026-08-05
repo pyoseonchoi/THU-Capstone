@@ -54,6 +54,7 @@ from app.v3.question_compiler import compile_questions
 from app.v3.reducers import (
     build_evidence_packet,
     reduce_absence,
+    reduce_claim_compare,
     reduce_mapped_structure,
     status_counts,
 )
@@ -330,12 +331,12 @@ class FullScanPipeline:
         expected_record_ids: set[str],
         compiled: CompiledDocument,
     ) -> tuple[ExecutionResult, list[V3MapResult]]:
-        result = self._reduced_result(plan, question_results, expected_record_ids)
+        result = self._reduced_result(plan, question_results, expected_record_ids, compiled)
 
         if result is not None:
             return result, question_results
         packet = build_evidence_packet(plan, question_results, expected_record_ids)
-        should_repair = self._evidence_needs_repair(plan, packet)
+        should_repair = self._evidence_needs_repair(plan, packet, compiled)
         if should_repair:
             selected = self._lexical_repair_records(plan, compiled)
             repaired = await self._mapper.map_selected_records(
@@ -367,6 +368,7 @@ class FullScanPipeline:
                     plan,
                     question_results,
                     expected_record_ids,
+                    compiled,
                 )
                 if result is not None:
                     return result, question_results
@@ -378,9 +380,71 @@ class FullScanPipeline:
         return await self._answerer.generate(plan, packet), question_results
 
     @staticmethod
-    def _evidence_needs_repair(plan: V3QuestionPlan, packet: EvidencePacket) -> bool:
+    def _referenced_tables_missing(
+        plan: V3QuestionPlan,
+        packet: EvidencePacket,
+        compiled: CompiledDocument | None,
+    ) -> bool:
+        """Whether a table/figure/box the question names by number has no
+        contributing record with a literal match for it.
+
+        Mentioning the table's name isn't the same as having pulled data
+        from the record that actually contains it -- a caption-only quote
+        (e.g. from a contents listing) can look like coverage while the
+        record with the real row data was never mapped at all.
+        """
+        if compiled is None:
+            return False
+        referenced_tables = re.findall(
+            r"\b(Table|Figure|Box)\s+([\dA-Za-z.]+)", plan.question, re.I
+        )
+        if not referenced_tables:
+            return False
+        contributing_ids = {item.record_id for item in packet.evidence}
+        for keyword, number in referenced_tables:
+            pattern = re.compile(
+                rf"\b{re.escape(keyword)}\s+{re.escape(number)}(?![A-Za-z0-9])",
+                re.I,
+            )
+            matching_ids = {
+                record.record_id
+                for record in all_mapping_records(compiled)
+                if pattern.search(record.text)
+            }
+            if matching_ids and not (matching_ids & contributing_ids):
+                return True
+        return False
+
+    @staticmethod
+    def _evidence_needs_repair(
+        plan: V3QuestionPlan,
+        packet: EvidencePacket,
+        compiled: CompiledDocument | None = None,
+    ) -> bool:
         if not packet.evidence:
             return True
+        combined = " ".join(
+            f"{item.entity} {item.claim} {item.exact_quote}"
+            for item in packet.evidence
+        ).casefold()
+        # A question naming a specific table/figure/box must have gathered
+        # evidence from that literal source, regardless of strategy — this
+        # catches the mapper quietly settling for the wrong table's data.
+        referenced_tables = re.findall(
+            r"\b(Table|Figure|Box)\s+([\dA-Za-z.]+)", plan.question, re.I
+        )
+        if referenced_tables and not all(
+            number.casefold() in combined for _, number in referenced_tables
+        ):
+            return True
+        if FullScanPipeline._referenced_tables_missing(plan, packet, compiled):
+            return True
+        if plan.strategy == Strategy.CLAIM_COMPARE:
+            pages = {item.page for item in packet.evidence if item.page}
+            hints_covered = all(
+                hint.casefold() in combined for hint in plan.entity_hints
+            )
+            return len(pages) < 2 or not hints_covered
         if plan.category != "global_synthesis":
             return False
         record_ids = {item.record_id for item in packet.evidence}
@@ -433,16 +497,26 @@ class FullScanPipeline:
         plan: V3QuestionPlan,
         question_results: list[V3MapResult],
         expected_record_ids: set[str],
+        compiled: CompiledDocument | None = None,
     ) -> ExecutionResult | None:
         if plan.strategy == Strategy.ABSENCE_MATRIX:
-            result = reduce_absence(plan, question_results, expected_record_ids)
+            result = reduce_absence(
+                plan, question_results, expected_record_ids, document=compiled
+            )
             return result or reduce_absence(
                 plan,
                 question_results,
                 expected_record_ids,
                 allow_partial=True,
+                document=compiled,
             )
         packet = build_evidence_packet(plan, question_results, expected_record_ids)
+        if plan.strategy == Strategy.CLAIM_COMPARE and not FullScanPipeline._referenced_tables_missing(
+            plan, packet, compiled
+        ):
+            claim_result = reduce_claim_compare(plan, packet)
+            if claim_result is not None:
+                return claim_result
         return reduce_mapped_structure(plan, packet)
 
     @staticmethod
@@ -468,6 +542,25 @@ class FullScanPipeline:
             }
 
         question_terms = terms(plan.question)
+
+        selected: dict[str, CompiledRecord] = {}
+        # A question naming a specific "Table 5.1" / "Figure 2.3" / "Box 6.4"
+        # can be resolved by a literal, unambiguous string search -- this does
+        # not depend on any model's judgment of relevance, so it is
+        # guaranteed to find the right record whenever that record exists,
+        # regardless of how the fuzzy keyword/entity scoring below ranks it.
+        referenced_tables = re.findall(
+            r"\b(Table|Figure|Box)\s+([\dA-Za-z.]+)", plan.question, re.I
+        )
+        for keyword, number in referenced_tables:
+            pattern = re.compile(
+                rf"\b{re.escape(keyword)}\s+{re.escape(number)}(?![A-Za-z0-9])", re.I
+            )
+            for record in records:
+                if len(selected) >= limit:
+                    break
+                if pattern.search(record.text):
+                    selected[record.record_id] = record
 
         def score(record, wanted: set[str]) -> tuple[int, int]:
             folded = record.text.casefold()

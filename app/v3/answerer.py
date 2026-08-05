@@ -20,22 +20,33 @@ def _flatten_to_text(value: object) -> str:
 
     Small models occasionally return a nested object under "answer" despite
     the prompt asking for a plain string. `str(dict)` would surface Python
-    syntax (braces, single quotes) straight to the grader; this walks the
-    structure and joins it into readable "label: value" text instead, with
-    no information dropped and no key names hardcoded.
+    syntax (braces, single quotes) straight to the grader. Dict keys here are
+    internal scaffolding names (e.g. required-slot labels like "thesis" or
+    "representative_examples"), not content, so they are dropped rather than
+    printed — only the values are joined into prose, with no information lost.
     """
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        return "; ".join(
-            f"{str(key).replace('_', ' ')}: {_flatten_to_text(val)}"
-            for key, val in value.items()
+        return " ".join(
+            _flatten_to_text(val) for val in value.values() if val not in (None, "", [], {})
         )
     if isinstance(value, list):
         return "; ".join(_flatten_to_text(item) for item in value)
     if value is None:
         return ""
     return str(value)
+
+
+_INLINE_EVIDENCE_TAG_RE = re.compile(r"\s*\(E\d+(?:\s*,\s*E\d+)*\)")
+
+
+def _strip_inline_evidence_tags(text: str) -> str:
+    """Drop internal evidence-id citations (e.g. "(E014)") the model may echo
+    into the answer text — they are bookkeeping for our own pipeline, not
+    content a grader or reader can use.
+    """
+    return _INLINE_EVIDENCE_TAG_RE.sub("", text)
 
 
 def _parse_answer(raw: str) -> str:
@@ -53,7 +64,8 @@ def _parse_answer(raw: str) -> str:
             data = json.loads(match.group(0))
         except json.JSONDecodeError:
             return text
-    return _flatten_to_text(data.get("answer", data.get("final_answer", ""))).strip()
+    answer = _flatten_to_text(data.get("answer", data.get("final_answer", ""))).strip()
+    return _strip_inline_evidence_tags(answer).strip()
 
 
 def _evidence_score(item) -> tuple[int, float]:

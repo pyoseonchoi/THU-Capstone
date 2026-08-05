@@ -158,12 +158,36 @@ def build_evidence_packet(
     )
 
 
+def _topic_example(assessments: list, document) -> str:
+    """Name where a present topic is discussed, preferring substantive cover.
+
+    Establishing that the other candidate topics are present is half of what
+    an absence question asks; naming the record that carries each one is the
+    evidence for that half, without which the claim is an unsupported
+    assertion. Reuses `document.records` (already loaded for every question on
+    this document) rather than a new lookup structure.
+    """
+    if document is None:
+        return ""
+    titles = {record.record_id: record.title for record in document.records}
+    ranked = sorted(
+        (item for item in assessments if item.exact_quote),
+        key=lambda item: (item.level != "substantive", item.page),
+    )
+    for item in ranked:
+        title = titles.get(item.record_id, "")
+        if title and not title.startswith("Record "):
+            return title
+    return ""
+
+
 def reduce_absence(
     plan: V3QuestionPlan,
     results: list[V3MapResult],
     expected_record_ids: set[str],
     *,
     allow_partial: bool = False,
+    document=None,
 ) -> ExecutionResult | None:
     """Reduce a multiple-choice absence matrix, optionally as best effort."""
     if not plan.candidate_topics:
@@ -226,9 +250,13 @@ def reduce_absence(
     missing_topic = absent[0]
     present_topics = [topic for topic in plan.candidate_topics if topic != missing_topic]
     qualifier = "substantively discussed" if substantive_only else "mentioned or raised"
+    covered = []
+    for topic in present_topics:
+        example = _topic_example(by_topic[topic], document)
+        covered.append(f"{topic} (for example at {example})" if example else topic)
     answer = (
         f"{missing_topic} is the only subject never {qualifier} anywhere in the book. "
-        f"The other subjects are covered: {', '.join(present_topics)}."
+        f"The other subjects are covered: {', '.join(covered)}."
     )
     evidence = [
         f"{topic}: {assessment.exact_quote} (page {assessment.page})"
@@ -264,6 +292,66 @@ def reduce_absence(
     )
 
 
+def reduce_claim_compare(
+    plan: V3QuestionPlan,
+    packet: EvidencePacket,
+) -> ExecutionResult | None:
+    """Render a contradiction answer from typed values instead of free prose.
+
+    The mapper already extracts a numeric `value` per evidence item and
+    validates `exact_quote` as a literal source substring. Asking a model to
+    then retype those numbers from memory while composing the final sentence
+    reintroduces the transcription errors the typed extraction was meant to
+    avoid -- so when both sides of the contradiction resolve to a real
+    number, render the comparison directly from those values and skip free
+    narration. Falls through to the existing synthesis path (returns None)
+    whenever the evidence doesn't cleanly resolve to two typed numbers, so it
+    only ever adds coverage rather than replacing it.
+    """
+    if plan.strategy != Strategy.CLAIM_COMPARE:
+        return None
+    numbered = [
+        (item, _candidate_number(item))
+        for item in packet.evidence
+        if item.role in ("claim", "counterevidence")
+    ]
+    numbered = [(item, value) for item, value in numbered if value is not None]
+    claims = [item for item, value in numbered if item.role == "claim"]
+    counters = [item for item, value in numbered if item.role == "counterevidence"]
+    if not claims or not counters:
+        return None
+
+    claim_item = max(claims, key=lambda item: item.confidence)
+    counter_item = max(counters, key=lambda item: item.confidence)
+    claim_value = _candidate_number(claim_item)
+    counter_value = _candidate_number(counter_item)
+    if claim_value is None or counter_value is None:
+        return None
+
+    def describe(item: EvidenceCandidate, value: float) -> str:
+        has_unit = item.unit and item.unit.strip().casefold() != "none"
+        unit = f" {item.unit}" if has_unit else ""
+        entity = item.entity or item.record_id
+        formatted = f"{value:g}{unit}"
+        quote = item.exact_quote.strip()
+        if len(quote) > 200:
+            quote = quote[:200].rsplit(" ", 1)[0] + "..."
+        return f"{entity} is recorded at {formatted} (\"{quote}\")"
+
+    answer = (
+        f"{describe(claim_item, claim_value)}. However, "
+        f"{describe(counter_item, counter_value)}. These figures conflict."
+    )
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=answer,
+        evidence=[claim_item.exact_quote, counter_item.exact_quote],
+        source_pages=sorted({claim_item.page, counter_item.page}),
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
 def _candidate_number(candidate: EvidenceCandidate) -> float | None:
     if isinstance(candidate.value, (int, float)):
         return float(candidate.value)
@@ -284,7 +372,7 @@ def reduce_mapped_structure(
     target = str(plan.metadata.get("target_field", ""))
     operation = str(plan.metadata.get("operation", ""))
     threshold = plan.metadata.get("threshold")
-    if not target or operation not in {"count", "argmax"}:
+    if not target or operation not in {"count", "argmax", "argmin"}:
         return None
 
     candidates: list[tuple[EvidenceCandidate, float]] = []
@@ -309,11 +397,22 @@ def reduce_mapped_structure(
         answer = f"{len(entities)} entities qualify: {', '.join(entities)}."
         used = [candidate for candidate, _ in selected]
     else:
-        candidate, value = max(candidates, key=lambda item: item[1])
+        seeking_max = operation != "argmin"
+        ranked = sorted(candidates, key=lambda item: item[1], reverse=seeking_max)
+        candidate, value = ranked[0]
         entity = candidate.entity or candidate.record_id
         unit = f" {candidate.unit}" if candidate.unit else ""
-        answer = f"{entity} has the maximum reported value: {value:g}{unit}."
-        used = [candidate]
+        verb = "the highest" if seeking_max else "the lowest"
+        answer = f"{entity} reports {verb} value: {value:g}{unit}."
+        if len(ranked) > 1:
+            runner_up_label = "next highest" if seeking_max else "next lowest"
+            comparison = ", ".join(
+                f"{item[0].entity or item[0].record_id} at {item[1]:g}"
+                f"{f' {item[0].unit}' if item[0].unit else ''}"
+                for item in ranked[1:3]
+            )
+            answer += f" The {runner_up_label} are {comparison}."
+        used = [item[0] for item in ranked[:3]]
 
     return ExecutionResult(
         question_id=plan.question_id,

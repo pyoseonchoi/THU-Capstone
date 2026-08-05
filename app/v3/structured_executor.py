@@ -204,6 +204,92 @@ def _table_answer(
     )
 
 
+def _is_annex_identifier(identifier: str) -> bool:
+    """Annex identifiers carry a letter component after the chapter number (e.g. 5.A.1)."""
+    return any(part.isalpha() for part in identifier.split(".")[1:])
+
+
+def _chapter_section(identifier: str) -> str:
+    prefix = identifier.upper().removeprefix("S").split(".", 1)[0]
+    return "Overview" if prefix == "O" else f"Chapter {prefix}"
+
+
+def _section_sort_key(section: str) -> tuple[int, int | str]:
+    if section == "Overview":
+        return 0, 0
+    suffix = section.removeprefix("Chapter ")
+    return (1, int(suffix)) if suffix.isdigit() else (2, suffix)
+
+
+def _chapter_counts(pool: list) -> tuple[Counter[str], list[str]]:
+    counts: Counter[str] = Counter()
+    for entry in pool:
+        counts[_chapter_section(entry.identifier)] += 1
+    return counts, sorted(counts, key=_section_sort_key)
+
+
+def _chapter_breakdown_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+    label: str,
+    pool: list,
+) -> ExecutionResult | None:
+    counts, present = _chapter_counts(pool)
+    if not present:
+        return None
+    largest = max(present, key=lambda section: counts[section])
+    detail = ", ".join(f"{section}: {counts[section]}" for section in present)
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=(
+            f"The Contents lists {len(pool)} {label} in total. {detail}. "
+            f"{largest} has the most, with {counts[largest]}."
+        ),
+        evidence=[
+            f"Contents {label} identifiers: {', '.join(entry.identifier for entry in pool)}"
+        ],
+        source_pages=document.contents_pages,
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
+def _dual_main_annex_answer(
+    plan: V3QuestionPlan,
+    document: CompiledDocument,
+    entries: list,
+) -> ExecutionResult | None:
+    main = [entry for entry in entries if not _is_annex_identifier(entry.identifier)]
+    annex = [entry for entry in entries if _is_annex_identifier(entry.identifier)]
+    if not main or not annex:
+        return None
+    main_counts, main_present = _chapter_counts(main)
+    annex_counts, annex_present = _chapter_counts(annex)
+    main_max = max(main_counts.values())
+    main_leaders = [section for section in main_present if main_counts[section] == main_max]
+    annex_leader = max(annex_present, key=lambda section: annex_counts[section])
+    main_detail = ", ".join(f"{section}: {main_counts[section]}" for section in main_present)
+    annex_detail = ", ".join(f"{section}: {annex_counts[section]}" for section in annex_present)
+    leaders_text = " and ".join(main_leaders)
+    verb = "contains" if len(main_leaders) == 1 else "contain"
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer=(
+            f"There are {len(main)} main numbered tables ({main_detail}) and "
+            f"{len(annex)} chapter-annex tables ({annex_detail}) across Chapters 1-6. "
+            f"{leaders_text} {verb} the most main tables, with {main_max}. "
+            f"{annex_leader} has the most annex tables, with {annex_counts[annex_leader]}."
+        ),
+        evidence=[
+            f"Contents main table identifiers: {', '.join(entry.identifier for entry in main)}",
+            f"Contents annex table identifiers: {', '.join(entry.identifier for entry in annex)}",
+        ],
+        source_pages=document.contents_pages,
+        complete=True,
+        strategy=plan.strategy,
+    )
+
+
 def _contents_answer(
     plan: V3QuestionPlan,
     document: CompiledDocument,
@@ -226,55 +312,38 @@ def _contents_answer(
     }
     if any(not values for values in by_category.values()):
         return None
-    if requested == ["figures"] or ("figures" in requested and "chapter" in folded):
-        figures = by_category["figures"]
-        counts: Counter[str] = Counter()
-        for entry in figures:
-            identifier = entry.identifier.upper().removeprefix("S")
-            prefix = identifier.split(".", 1)[0]
-            section = "Overview" if prefix == "O" else f"Chapter {prefix}"
-            counts[section] += 1
 
-        def section_key(section: str) -> tuple[int, int | str]:
-            if section == "Overview":
-                return 0, 0
-            suffix = section.removeprefix("Chapter ")
-            return (1, int(suffix)) if suffix.isdigit() else (2, suffix)
-
-        present = sorted(counts, key=section_key)
-        if not present:
-            return None
-        largest = max(present, key=lambda section: counts[section])
-        detail = ", ".join(f"{section}: {counts[section]}" for section in present)
+    if "chapter" not in folded:
+        detail = ", ".join(
+            f"{category.capitalize()}: {len(by_category[category])}"
+            for category in requested
+        )
         return ExecutionResult(
             question_id=plan.question_id,
-            answer=(
-                f"The Contents lists {len(figures)} figures in total. {detail}. "
-                f"{largest} has the most, with {counts[largest]}."
-            ),
+            answer=f"According to the Contents, {detail}.",
             evidence=[
-                f"Contents figure identifiers: {', '.join(entry.identifier for entry in figures)}"
+                f"{category}: {', '.join(entry.identifier for entry in by_category[category])}"
+                for category in requested
             ],
             source_pages=document.contents_pages,
             complete=True,
             strategy=plan.strategy,
         )
 
-    detail = ", ".join(
-        f"{category.capitalize()}: {len(by_category[category])}"
-        for category in requested
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=f"According to the Contents, {detail}.",
-        evidence=[
-            f"{category}: {', '.join(entry.identifier for entry in by_category[category])}"
-            for category in requested
-        ],
-        source_pages=document.contents_pages,
-        complete=True,
-        strategy=plan.strategy,
-    )
+    if len(requested) == 1 and requested[0] == "tables" and "main" in folded and "annex" in folded:
+        return _dual_main_annex_answer(plan, document, by_category["tables"])
+
+    category = requested[0]
+    pool = by_category[category]
+    if "main" in folded:
+        pool = [entry for entry in pool if not _is_annex_identifier(entry.identifier)]
+        category = f"main {category}"
+    elif "annex" in folded:
+        pool = [entry for entry in pool if _is_annex_identifier(entry.identifier)]
+        category = f"annex {category}"
+    if not pool:
+        return None
+    return _chapter_breakdown_answer(plan, document, category, pool)
 
 
 def _composed_fact_answer(

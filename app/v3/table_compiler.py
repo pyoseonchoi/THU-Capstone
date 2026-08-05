@@ -20,7 +20,7 @@ _CONTENTS_ENTRY_RE = re.compile(
     re.I | re.S,
 )
 _CONTENTS_IDENTIFIER = (
-    r"(?:[OS]\.\d+(?:\.\d+){0,2}|S?\d+(?:\.\d+){1,3})"
+    r"(?:[OS]\.\d+(?:\.\d+){0,2}|\d+\.[A-Z](?:\.\d+){1,2}|S?\d+(?:\.\d+){1,3})"
 )
 _BODY_CAPTION_RE = re.compile(
     rf"\b(?P<group>Box|Spotlight|Figure|Table)\s+"
@@ -43,6 +43,10 @@ _HDI_GROUPS = (
     "High human development",
     "Medium human development",
     "Low human development",
+)
+_CONTENTS_HEADING_RE = re.compile(
+    r"^[^A-Za-z]{0,25}(?:table\s+of\s+)?contents\b",
+    re.I,
 )
 
 
@@ -267,7 +271,7 @@ def compile_contents(
         (
             index
             for index, page in enumerate(pages)
-            if re.match(r"^\s*contents\b", page.text, re.I)
+            if _CONTENTS_HEADING_RE.match(page.text)
         ),
         None,
     )

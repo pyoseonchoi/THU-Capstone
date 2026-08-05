@@ -186,6 +186,21 @@ class StructureAugmenter:
 
     async def _resolve_one_title(self, document: CompiledDocument, record) -> None:
         excerpt = record.text[:_TITLE_EXCERPT_CHARS]
+        # When the document has its own validated contents/index listing, a
+        # proposed title that isn't in it is very likely a neighbouring
+        # subsection (a hotel, a trail) rather than this record's own name --
+        # the book's own table of contents is stronger ground truth than any
+        # keyword heuristic, and checking one specific proposed phrase against
+        # it (rather than scanning many candidate lines) keeps false-positive
+        # risk low. Skipped when the document has no contents text at all, so
+        # documents without an index keep the original excerpt-only check.
+        def confirmed(candidate: str) -> bool:
+            if not _identifier_exists(candidate, excerpt):
+                return False
+            if document.contents_text:
+                return candidate in document.contents_text
+            return True
+
         cache_path = self._title_cache_path(document, record)
         if cache_path.exists():
             try:
@@ -193,7 +208,7 @@ class StructureAugmenter:
                 title = str(cached.get("title", "")).strip()
             except (OSError, json.JSONDecodeError):
                 title = ""
-            if title and _identifier_exists(title, excerpt):
+            if title and confirmed(title):
                 record.title = title
                 return
 
@@ -216,7 +231,7 @@ class StructureAugmenter:
             logger.warning("Title resolution failed for %s: %s", record.record_id, exc)
             return
 
-        if not title or not _identifier_exists(title, excerpt):
+        if not title or not confirmed(title):
             return
         cache_path.write_text(
             json.dumps({"title": title}, ensure_ascii=False), encoding="utf-8"
