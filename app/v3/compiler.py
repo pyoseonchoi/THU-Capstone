@@ -696,39 +696,41 @@ def _title_for_anchor(
     previous_anchor: int | None,
     heading_frequencies: Counter[str] | None = None,
 ) -> tuple[int, str] | None:
+    """Pick the best title candidate in the window before this anchor.
+
+    A genuine entity title is not always heading-formatted: some source
+    conversions render the chapter title as a plain title line while every
+    subsection within that chapter (a "Stay here" hotel listing, a "Hike
+    this" trail name) keeps its own markdown heading. Treating headings as a
+    hard-priority tier over plain-text candidates therefore lets a rare
+    hotel/trail heading beat the real, non-heading title whenever the window
+    contains any heading at all. Instead, pool every `_is_record_title`
+    candidate -- heading or not -- and rank uniformly by whether it names an
+    entity, how rare it is document-wide, and how early it sits in the
+    window (the real title opens its section; subsection headings follow
+    it).
+    """
     page_by_number = {page.page_number: page for page in pages}
-    marker = _fact_marker(page_by_number[anchor].text)
-    marker_level = marker[2] if marker else 7
     start = max(pages[0].page_number, (previous_anchor or anchor - 8) + 1)
     frequencies = heading_frequencies if heading_frequencies is not None else Counter()
     candidates: list[tuple[int, int, str]] = []
-    fallbacks: list[tuple[int, int, str]] = []
     for page_number in range(start, anchor + 1):
         page = page_by_number.get(page_number)
         if page is None:
             continue
         for line_index, line in enumerate(page.text.splitlines()):
-            parsed = _heading(line)
-            if parsed and parsed[0] < marker_level and _is_record_title(line):
-                candidates.append((page_number, line_index, parsed[1]))
-            elif _is_record_title(line):
-                fallbacks.append((page_number, line_index, _clean_line(line)))
-
-    def rarest_first(pool: list[tuple[int, int, str]]) -> tuple[int, int, str] | None:
-        if not pool:
-            return None
-        return min(
-            enumerate(pool),
-            key=lambda item: (
-                0 if _looks_like_entity_title(item[1][2]) else 1,
-                frequencies.get(item[1][2].casefold(), 0),
-                -item[0],
-            ),
-        )[1]
-
-    selected = rarest_first(candidates) or rarest_first(fallbacks)
-    if selected is None:
+            if _is_record_title(line):
+                candidates.append((page_number, line_index, _clean_line(line)))
+    if not candidates:
         return None
+    selected = min(
+        enumerate(candidates),
+        key=lambda item: (
+            0 if _looks_like_entity_title(item[1][2]) else 1,
+            frequencies.get(item[1][2].casefold(), 0),
+            item[0],
+        ),
+    )[1]
     return selected[0], selected[2]
 
 
