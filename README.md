@@ -22,8 +22,10 @@ PDF/TXT
   -> per-record structured profiling (only when the registry has holes)
        -> induced metric vocabulary, then one cheap call per record
        -> every fact kept must be quoted verbatim from its own record
-  -> question-to-field binding against the discovered field list
-       -> matched by meaning, bounded to fields the document actually has
+  -> question routing against the discovered field list
+       -> each question placed on the operation that answers it, by meaning
+       -> arguments (field, groups, threshold, direction) bounded to the
+          document's own fields and groups, and declined when unsure
        -> flattened multi-page table reconstruction and ranked-row validation
        -> body-caption cross-validation for interleaved Contents lists
        -> consecutive fallback segments for arbitrary Markdown
@@ -74,8 +76,11 @@ no general verifier that can rewrite a count, maximum, or absence verdict.
 - Profiling is skipped entirely when the compiler already bound a fact card
   for every record, so well-parsed documents cost no extra tokens.
 - No field name, question phrasing, or subject vocabulary is written into the
-  code. Fields are named by the document, and a question reaches one only by
-  being matched against the fields that document actually reports.
+  code. Fields are named by the document, and a question reaches an operation
+  by what it means rather than by the words one evaluation happened to use.
+- A question the router is unsure about is read in full by the exhaustive
+  scan, which is slower and always correct, rather than answered from an
+  operation that may not be the one it asked for.
 - Contents counts are trusted only when their identifiers are confirmed by
   source-literal body captions; ambiguous layouts use a bounded cached fallback.
 - Stored documents are automatically recompiled when the compiler contract changes.

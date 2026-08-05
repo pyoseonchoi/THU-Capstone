@@ -11,6 +11,7 @@ from app.v3.models import (
     ExecutionResult,
     NumberFact,
     OperationKind,
+    QuestionShape,
     V3QuestionPlan,
 )
 from app.v3.question_compiler import _target_field
@@ -198,6 +199,27 @@ def _entity_count_is_evidenced(document: CompiledDocument) -> bool:
     return (
         signals.get("segmentation") == "boilerplate_cycle"
         and signals.get("cycle_markers") == len(document.records)
+    )
+
+
+def _shaped(plan: V3QuestionPlan, *shapes: QuestionShape) -> bool:
+    """Whether the router sent this question to one of these operations."""
+    return plan.shape_plan.routes and plan.shape_plan.shape in shapes
+
+
+def _phrasing_may_route(plan: V3QuestionPlan) -> bool:
+    """Whether wording may still route a question the router did not shape.
+
+    The router reads every question, so a question it shaped has an answer
+    about which operation applies, and wording must not overrule it. Only a
+    question it never saw — because classification is off, or the call failed
+    — falls back to recognising phrasings.
+    """
+    shape = plan.shape_plan
+    return (
+        not shape.routes
+        and shape.shape == QuestionShape.SYNTHESIS
+        and not shape.confident
     )
 
 
@@ -732,7 +754,9 @@ def _generic_cross_border_relations(
 ) -> ExecutionResult | None:
     """Join three explicitly distinct cross-border relationship structures."""
     folded = plan.question.casefold()
-    if not (
+    if _shaped(plan, QuestionShape.RELATION):
+        pass
+    elif not _phrasing_may_route(plan) or not (
         "straddl" in folded
         and "transboundary" in folded
         and "paired" in folded
@@ -831,7 +855,11 @@ def _generic_needle_answer(
     document: CompiledDocument,
 ) -> ExecutionResult | None:
     folded = plan.question.casefold()
-    if any(term in folded for term in ("begin as", "began as", "start out", "started as")):
+    shape = plan.shape_plan
+    routed_event = _shaped(plan, QuestionShape.DATED_EVENT)
+    if _phrasing_may_route(plan) and any(
+        term in folded for term in ("begin as", "began as", "start out", "started as")
+    ):
         requested_subject = _question_subject(
             plan.question,
             (
@@ -875,7 +903,9 @@ def _generic_needle_answer(
                         strategy=plan.strategy,
                     )
 
-    if "estimated age" in folded or "estimated" in folded and "years" in folded:
+    if _phrasing_may_route(plan) and (
+        "estimated age" in folded or ("estimated" in folded and "years" in folded)
+    ):
         requested_subject = _question_subject(
             plan.question,
             (
@@ -929,19 +959,29 @@ def _generic_needle_answer(
                         strategy=plan.strategy,
                     )
 
-    if "first recorded" in folded:
+    if routed_event or (_phrasing_may_route(plan) and "first recorded" in folded):
+        # A routed question already names the event and whose event it is;
+        # otherwise both have to be read back out of the question's wording.
         event_match = re.search(
             r"first\s+recorded\s+(?P<event>.+?)\s+(?:dated|date)",
             plan.question,
             re.IGNORECASE,
         )
-        event = event_match.group("event").strip(" ?.,") if event_match else ""
-        owner = _question_subject(
-            plan.question,
-            (
-                r"(?:in\s+what\s+year\s+is|what\s+year\s+is|when\s+(?:was|is))\s+"
-                r"(?P<subject>[A-Z][A-Za-z'\- ]+?)[\u2019']s\s+first\s+recorded",
-            ),
+        event = (
+            shape.event
+            if routed_event and shape.event
+            else (event_match.group("event").strip(" ?.,") if event_match else "")
+        )
+        owner = (
+            shape.subject
+            if routed_event and shape.subject
+            else _question_subject(
+                plan.question,
+                (
+                    r"(?:in\s+what\s+year\s+is|what\s+year\s+is|when\s+(?:was|is))\s+"
+                    r"(?P<subject>[A-Z][A-Za-z'\- ]+?)[\u2019']s\s+first\s+recorded",
+                ),
+            )
         )
         for record in document.records:
             if owner and owner.casefold() not in record.text.casefold():
@@ -950,8 +990,15 @@ def _generic_needle_answer(
                 hint.casefold() in record.title.casefold() for hint in plan.entity_hints
             ):
                 continue
-            phrase = f"first recorded {event}" if event else "first recorded"
-            label = f"The first recorded {event}" if event else "The event"
+            # The router names the whole event ("first recorded eruption");
+            # the wording fallback captures only what follows the words it
+            # matched on, so only that needs them put back.
+            phrase = (
+                event.casefold()
+                if routed_event and event
+                else (f"first recorded {event}" if event else "first recorded")
+            )
+            label = f"The {phrase}" if phrase != "first recorded" else "The event"
             # The compiler bound this figure to the label that names it. A
             # fact card carries no sentence punctuation, so re-reading its raw
             # text matches the first number in the whole card — an area or a
@@ -994,49 +1041,76 @@ def _generic_needle_answer(
 
 
 def _catalog_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
+    """Count records, and records per named group, from the closed catalog."""
     if not _entity_count_is_evidenced(document):
         return None
     folded = plan.question.casefold()
-    countries = _country_mentions(plan.question, document)
-    if "profile" in folded and "in total" in folded and countries:
-        country = countries[0]
-        selected = [record for record in document.records if record.country == country]
+    if _shaped(plan, QuestionShape.COUNT_ENTITIES):
+        groups = plan.shape_plan.groups
+        wants_total = not groups or "total" in folded
+    elif _phrasing_may_route(plan):
+        groups = _country_mentions(plan.question, document)
+        wants_total = "profile" in folded and "in total" in folded
+        if not groups or not (wants_total or "how many" in folded):
+            return None
+    else:
+        return None
+
+    noun = document.entity_label or "entity"
+    members = {
+        group: [record for record in document.records if record.country == group]
+        for group in groups
+    }
+    pages = sorted({
+        record.page_start for records in members.values() for record in records
+    })
+
+    if len(groups) <= 1 and wants_total:
+        total = f"The guide profiles {len(document.records)} {noun}s in total."
+        if not groups:
+            return ExecutionResult(
+                question_id=plan.question_id,
+                answer=total,
+                evidence=[f"Compiled chapter catalog: {len(document.records)} records"],
+                source_pages=[record.page_start for record in document.records[:5]],
+                complete=True,
+                strategy=plan.strategy,
+            )
+        group = groups[0]
+        selected = members[group]
         names = ", ".join(record.title for record in selected)
-        noun = document.entity_label or "entity"
         return ExecutionResult(
             question_id=plan.question_id,
-            answer=(
-                f"The guide profiles {len(document.records)} {noun}s in total. "
-                f"{len(selected)} are in {country}: {names}."
-            ),
+            answer=f"{total} {len(selected)} are in {group}: {names}.",
             evidence=[f"Compiled chapter catalog: {len(document.records)} records"],
-            source_pages=[record.page_start for record in selected],
+            source_pages=pages,
             complete=bool(selected),
             strategy=plan.strategy,
         )
-    if "how many" in folded and len(countries) >= 2:
-        clauses: list[str] = []
-        pages: list[int] = []
-        for country in countries:
-            selected = [record for record in document.records if record.country == country]
-            clauses.append(
-                f"{country} has {len(selected)}: " + ", ".join(record.title for record in selected)
-            )
-            pages.extend(record.page_start for record in selected)
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer="; ".join(clauses) + ".",
-            evidence=["Counts computed from the closed chapter catalog"],
-            source_pages=sorted(set(pages)),
-            complete=all(f"{country} has 0" not in clauses for country in countries),
-            strategy=plan.strategy,
-        )
-    return None
+
+    if not groups:
+        return None
+    clauses = [
+        f"{group} has {len(members[group])}: "
+        + ", ".join(record.title for record in members[group])
+        for group in groups
+    ]
+    return ExecutionResult(
+        question_id=plan.question_id,
+        answer="; ".join(clauses) + ".",
+        evidence=["Counts computed from the closed chapter catalog"],
+        source_pages=pages,
+        complete=all(members[group] for group in groups),
+        strategy=plan.strategy,
+    )
 
 
 def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
     folded = plan.question.casefold()
-    if "different units" not in folded and "different unit" not in folded:
+    if not _shaped(plan, QuestionShape.UNIT_OUTLIER) and not (
+        _phrasing_may_route(plan)
+        and ("different units" in folded or "different unit" in folded)
+    ):
         return None
     # The question does not say which measurement disagrees, so look for the
     # field whose rows state one unit everywhere except in a single record.
@@ -1095,7 +1169,9 @@ def _largest_claim_conflict(
     document: CompiledDocument,
 ) -> ExecutionResult | None:
     folded = plan.question.casefold()
-    if "largest in its country" not in folded:
+    if not _shaped(plan, QuestionShape.CLAIM_CONFLICT) and not (
+        _phrasing_may_route(plan) and "largest in its country" in folded
+    ):
         return None
     # The measured quantity is whichever field the question was bound to;
     # without one there is nothing to compare the boast against.

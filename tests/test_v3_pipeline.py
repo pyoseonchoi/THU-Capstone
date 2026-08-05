@@ -48,12 +48,24 @@ class PipelineFakeClient(BaseLLMClient):
                 }],
             }
         elif kwargs["stage"] == "planner":
-            # The binder decides which compiled field each question is about.
+            # One planner call routes each question to an operation, the other
+            # binds it to a compiled field.
+            ids = kwargs.get("question_ids", [])
             content = {
+                "questions": [
+                    {
+                        "question_id": question_id,
+                        "shape": "extremum",
+                        "field": "area_covered",
+                        "direction": "max",
+                        "confident": True,
+                    }
+                    for question_id in ids
+                ],
                 "bindings": [
                     {"question_id": question_id, "field": "area_covered"}
-                    for question_id in kwargs.get("question_ids", [])
-                ]
+                    for question_id in ids
+                ],
             }
         else:
             content = {"answer": "The internal code name was Aurora."}
@@ -136,10 +148,10 @@ async def test_structured_question_uses_no_llm_calls(tmp_path):
 
     assert "Beta National Park" in run.answers[0].final_answer
     assert "300" in run.answers[0].final_answer
-    # Matching the question to a compiled field is the one model call a
-    # deterministic answer costs; the reduction itself stays in Python, with
+    # Routing the question and binding it to a field are the only model calls
+    # a deterministic answer costs; the reduction itself stays in Python, with
     # no per-record mapping and no answer synthesis.
-    assert fake.stages == ["planner"]
+    assert fake.stages == ["planner", "planner"]
     await pipeline.close()
 
 

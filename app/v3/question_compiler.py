@@ -9,6 +9,8 @@ from app.v3.models import (
     CompiledDocument,
     OperationKind,
     OperationStep,
+    QuestionShape,
+    ShapePlan,
     Strategy,
     V3QuestionPlan,
 )
@@ -146,12 +148,50 @@ def _mentioned_countries(
     return [country for country in countries if country.casefold() in folded]
 
 
+def _shaped_steps(shape: ShapePlan) -> list[OperationStep] | None:
+    """Build the operation sequence a routed shape states outright.
+
+    Where the router named the operation, its comparator, threshold and
+    direction, reading those back out of the wording adds nothing and can
+    disagree with the routing that chose the field.
+    """
+    if not shape.routes or not shape.field:
+        return None
+    if shape.shape == QuestionShape.COUNT_BY_THRESHOLD:
+        return [
+            OperationStep(
+                kind=OperationKind.FILTER,
+                field=shape.field,
+                comparator=shape.comparator,
+                value=shape.threshold,
+            ),
+            OperationStep(kind=OperationKind.COUNT, field=shape.field),
+            OperationStep(kind=OperationKind.LIST, field=shape.field),
+        ]
+    if shape.shape == QuestionShape.EXTREMUM:
+        return [
+            OperationStep(
+                kind=(
+                    OperationKind.ARGMIN
+                    if shape.direction == "min"
+                    else OperationKind.ARGMAX
+                ),
+                field=shape.field,
+            )
+        ]
+    return None
+
+
 def _operation_steps(
     question: str,
     category: str,
     target: str,
     document: CompiledDocument | None = None,
+    shape: ShapePlan | None = None,
 ) -> list[OperationStep]:
+    routed = _shaped_steps(shape) if shape is not None else None
+    if routed is not None:
+        return routed
     folded = question.casefold()
     threshold = _threshold(question)
     steps: list[OperationStep] = []
@@ -340,6 +380,7 @@ def compile_question(
     question: QuestionRequest,
     document: CompiledDocument | None = None,
     bound_field: str | None = None,
+    shape_plan: ShapePlan | None = None,
 ) -> V3QuestionPlan:
     """Compile a question into a validated strategy and operation sequence.
 
@@ -351,14 +392,23 @@ def compile_question(
     """
     category = _normalize_category(question.category)
     folded = question.question.casefold()
+    shape = shape_plan or ShapePlan()
+    # A routed shape names the field it measures, which is the same verdict a
+    # binder reaches and one made together with the operation it feeds.
     target = (
-        _target_field(question.question, document)
-        if bound_field is None
-        else bound_field
+        shape.field
+        if shape.routes and shape.field
+        else (
+            _target_field(question.question, document)
+            if bound_field is None
+            else bound_field
+        )
     )
     if not target and "ranked" in folded and "group" in folded:
         target = "rank"
-    operations = _operation_steps(question.question, category, target, document)
+    operations = _operation_steps(
+        question.question, category, target, document, shape
+    )
 
     if category == "absence" or any(
         term in folded for term in ("never mentioned", "never raised", "never substantively")
@@ -406,6 +456,7 @@ def compile_question(
         ),
         entity_hints=_entity_hints(question.question, document),
         metadata=_structured_metadata(question.question, operations, target),
+        shape_plan=shape,
     )
 
 
@@ -413,12 +464,15 @@ def compile_questions(
     questions: list[QuestionRequest],
     document: CompiledDocument | None = None,
     bindings: dict[str, str] | None = None,
+    shapes: dict[str, ShapePlan] | None = None,
 ) -> list[V3QuestionPlan]:
+    routed = shapes or {}
     return [
         compile_question(
             question,
             document,
             None if bindings is None else bindings.get(question.question_id, ""),
+            routed.get(question.question_id),
         )
         for question in questions
     ]

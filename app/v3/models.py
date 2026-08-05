@@ -169,6 +169,53 @@ class V3MapResult(BaseModel):
     error: str = ""
 
 
+class QuestionShape(str, enum.Enum):
+    """What a question asks the compiled registry to do.
+
+    These are the operations the deterministic executors already implement,
+    named so a model can route a question to one instead of the executors
+    recognising the phrasings one evaluation happened to use.
+    """
+
+    COUNT_ENTITIES = "count_entities"
+    COUNT_BY_THRESHOLD = "count_by_threshold"
+    EXTREMUM = "extremum"
+    UNIT_OUTLIER = "unit_outlier"
+    CLAIM_CONFLICT = "claim_conflict"
+    RELATION = "relation"
+    DATED_EVENT = "dated_event"
+    ABSENCE = "absence"
+    CONTENTS_INDEX = "contents_index"
+    SYNTHESIS = "synthesis"
+
+
+class ShapePlan(BaseModel):
+    """The shape of a question and the arguments that shape needs."""
+
+    shape: QuestionShape = QuestionShape.SYNTHESIS
+    # The compiled field whose values the question measures.
+    field: str = ""
+    # Registry group values the question names, in the order it names them.
+    groups: list[str] = Field(default_factory=list)
+    # Threshold filter for COUNT_BY_THRESHOLD.
+    comparator: str = ""
+    threshold: float | None = None
+    # Which end of the range EXTREMUM wants.
+    direction: str = ""
+    # The population a ranking claim covers, copied from the question.
+    claim_scope: str = ""
+    # What a DATED_EVENT question asks about, and whose event it is.
+    event: str = ""
+    subject: str = ""
+    # Whether the model was sure enough for Python to act on this.
+    confident: bool = False
+
+    @property
+    def routes(self) -> bool:
+        """Whether this plan may drive a deterministic executor."""
+        return self.confident and self.shape != QuestionShape.SYNTHESIS
+
+
 class V3QuestionPlan(BaseModel):
     """Small, answer-oriented plan with no free-form arithmetic operator."""
 
@@ -182,6 +229,7 @@ class V3QuestionPlan(BaseModel):
     target_fields: list[str] = Field(default_factory=list)
     entity_hints: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    shape_plan: ShapePlan = Field(default_factory=ShapePlan)
 
 
 class ExecutionResult(BaseModel):

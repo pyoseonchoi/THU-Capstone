@@ -59,6 +59,7 @@ from app.v3.reducers import (
     reduce_mapped_structure,
     status_counts,
 )
+from app.v3.shape_classifier import ShapeClassifier
 from app.v3.structure_augmenter import StructureAugmenter
 from app.v3.structured_executor import execute_structured
 
@@ -87,6 +88,7 @@ class FullScanPipeline:
         self._augmenter = StructureAugmenter(self._router, self._tracker, settings)
         self._profiler = RecordProfiler(self._router, self._tracker, settings)
         self._binder = FieldBinder(self._router, self._tracker, settings)
+        self._shaper = ShapeClassifier(self._router, self._tracker, settings)
         self._store = RunStore(settings)
 
     async def process_document(
@@ -219,6 +221,7 @@ class FullScanPipeline:
         )
         self._profiler = RecordProfiler(self._router, self._tracker, self._settings)
         self._binder = FieldBinder(self._router, self._tracker, self._settings)
+        self._shaper = ShapeClassifier(self._router, self._tracker, self._settings)
         started = time.perf_counter()
         run = PipelineRun(
             document_id=document_id,
@@ -241,8 +244,9 @@ class FullScanPipeline:
 
         records = all_mapping_records(compiled)
         expected_record_ids = {record.record_id for record in records}
+        shapes = await self._shaper.classify(questions, compiled)
         bindings = await self._binder.bind(questions, compiled)
-        plans = compile_questions(questions, compiled, bindings)
+        plans = compile_questions(questions, compiled, bindings, shapes)
         deterministic: dict[str, ExecutionResult] = {}
         unresolved: list[V3QuestionPlan] = []
         if progress_callback:
