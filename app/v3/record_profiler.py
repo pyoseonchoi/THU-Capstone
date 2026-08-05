@@ -134,8 +134,13 @@ class RecordProfiler:
         )
 
         by_id = {record.record_id: record for record in records}
+        # A grouping label groups more than one record. Asked to classify a
+        # record, a model may answer with a section heading it read there
+        # instead, and only the values the registry already uses as groups can
+        # be told apart from that.
+        groups = {record.country for record in records if record.country}
         for record_id, payload in profiles.items():
-            self._apply(by_id[record_id], payload)
+            self._apply(by_id[record_id], payload, groups)
 
         document.profiled_records = sorted(profiles)
         document.field_catalog = _discovered_catalog(
@@ -212,11 +217,16 @@ class RecordProfiler:
         logger.info("Induced metric vocabulary from %d records: %s", len(sample), vocabulary)
         return vocabulary
 
-    def _apply(self, record: CompiledRecord, payload: dict[str, Any]) -> None:
+    def _apply(
+        self,
+        record: CompiledRecord,
+        payload: dict[str, Any],
+        groups: set[str],
+    ) -> None:
         """Merge verified profile output into a compiled record."""
         source = normalize_source(record.text)
         name = str(payload.get("name", "")).strip()
-        if name and normalize_source(name) in source:
+        if name and normalize_source(name) in source and _names_the_record(record, name):
             # A placeholder is not the only unusable title: layout heuristics
             # also pick up caption fragments and running heads that look like
             # titles, and a name read from the record and checked against it
@@ -224,7 +234,12 @@ class RecordProfiler:
             if not _titled(record):
                 record.title = name[:120]
         category = str(payload.get("category", "")).strip()
-        if category and not record.country and normalize_source(category) in source:
+        if (
+            category
+            and not record.country
+            and normalize_source(category) in source
+            and category in groups
+        ):
             record.country = category[:80]
 
         verified = self._facts(record, payload)
@@ -383,6 +398,21 @@ class RecordProfiler:
             temporary.replace(path)
         except OSError as exc:
             logger.warning("Could not write profile cache: %s", exc)
+
+
+def _names_the_record(record: CompiledRecord, name: str) -> bool:
+    """Report whether a name is what the record is about.
+
+    A record returns to its subject; something it mentions once in passing is
+    a hotel, a village, or a neighbour, not the entity the record profiles.
+    Requiring every distinctive word of the name to recur separates the two
+    without knowing what kind of thing is being named.
+    """
+    text = record.text.casefold()
+    words = [word for word in re.findall(r"[^\W\d_]{3,}", name.casefold())]
+    if not words:
+        return False
+    return min(text.count(word) for word in words) >= 2
 
 
 def _titled(record: CompiledRecord) -> bool:

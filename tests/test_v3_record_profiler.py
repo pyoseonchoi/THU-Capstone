@@ -97,7 +97,8 @@ async def test_facts_must_be_quoted_from_the_record(tmp_path):
 async def test_title_filled_only_when_verbatim_and_unresolved(tmp_path):
     unresolved = _record(
         "record-001",
-        "[Page 1]\nGlassfen Wetland Station monitors peat hydrology.",
+        "[Page 1]\nGlassfen Wetland Station monitors peat hydrology. "
+        "Glassfen Wetland Station opened in 1974.",
         title="Record 1",
     )
     hallucinated = _record(
@@ -107,25 +108,36 @@ async def test_title_filled_only_when_verbatim_and_unresolved(tmp_path):
     )
     settled = _record(
         "record-003",
-        "[Page 3]\nRed Mesa Ecology Station tracks runoff.",
+        "[Page 3]\nRed Mesa Ecology Station tracks runoff. "
+        "Red Mesa Ecology Station keeps a rain gauge.",
         title="Existing Title",
+    )
+    passing_mention = _record(
+        "record-004",
+        "[Page 4]\nBluewater Marsh Station samples the delta every spring. "
+        "Bluewater Marsh Station is reached from the Heron Inn, which has "
+        "twelve rooms. Bluewater Marsh Station also runs a ringing station.",
+        title="Record 4",
     )
     profiler, _ = _profiler(tmp_path, {
         "record-001": {"name": "Glassfen Wetland Station", "facts": []},
         "record-002": {"name": "Invented Site Name", "facts": []},
         "record-003": {"name": "Red Mesa Ecology Station", "facts": []},
+        # Named in the record, but only once and in passing.
+        "record-004": {"name": "Heron Inn", "facts": []},
     })
 
     document = CompiledDocument(
         document_id="d",
         record_kind="repeated_entity",
-        records=[unresolved, hallucinated, settled],
+        records=[unresolved, hallucinated, settled, passing_mention],
     )
     await profiler.profile(document)
 
     assert unresolved.title == "Glassfen Wetland Station"
     assert hallucinated.title == "Record 2"
     assert settled.title == "Existing Title"
+    assert passing_mention.title == "Record 4"
 
 
 @pytest.mark.asyncio
