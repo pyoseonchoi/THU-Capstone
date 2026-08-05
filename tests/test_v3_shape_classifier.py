@@ -246,3 +246,42 @@ def test_routing_wins_over_wording_for_a_question_it_shaped():
     plan = compile_question(question, document, None, shaped)
 
     assert execute_structured(plan, document) is None
+
+
+def test_an_unsure_routing_does_not_suppress_the_wording_fallback():
+    """An unsure routing is a guess, not a verdict.
+
+    Suppressing the phrasings there leaves a question with no executor at all,
+    which is how a needle whose answer the compiler had already bound fell
+    through to the model and came back with a different year.
+    """
+    from app.v3.structured_executor import _phrasing_may_route
+
+    document = _document()
+    question = QuestionRequest(
+        question_id="q", question="Which is biggest?", category="superlative"
+    )
+
+    unsure = compile_question(
+        question, document, None,
+        ShapePlan(shape=QuestionShape.COUNT_ENTITIES, confident=False),
+    )
+    settled = compile_question(
+        question, document, None,
+        ShapePlan(shape=QuestionShape.SYNTHESIS, confident=True),
+    )
+
+    assert _phrasing_may_route(unsure) is True
+    # A confident verdict that the question is not structured still stands.
+    assert _phrasing_may_route(settled) is False
+
+
+def test_a_routed_event_matches_a_label_worded_differently():
+    """The router and the document name the same event in different words."""
+    from app.v3.structured_executor import _content_words, _label_covers
+
+    phrase = "first recorded eruption of etna"
+    wanted = _content_words(phrase)
+
+    assert _label_covers("(BC) First recorded eruption of the Etna volcano", phrase, wanted)
+    assert not _label_covers("Area covered (sq km)", phrase, wanted)

@@ -16,6 +16,9 @@ from app.v3.models import (
 )
 from app.v3.question_compiler import _target_field
 
+# Function words carry no part of what a phrase names.
+_PHRASE_STOPWORDS = frozenset({"the", "and", "for", "its", "was", "with", "from"})
+
 
 def _facts(document: CompiledDocument, field: str) -> list[tuple[CompiledRecord, NumberFact]]:
     return [
@@ -42,6 +45,23 @@ def _metric_phrase(field: str, fact: NumberFact) -> str:
         "",
         phrase,
     )
+
+
+def _content_words(phrase: str) -> set[str]:
+    """Return the words of a phrase that carry its meaning."""
+    return {
+        word
+        for word in re.findall(r"[^\W\d_]{3,}", phrase.casefold())
+        if word not in _PHRASE_STOPWORDS
+    }
+
+
+def _label_covers(label: str, phrase: str, wanted: set[str]) -> bool:
+    """Whether a document label names the same thing as a phrase."""
+    folded = label.casefold()
+    if phrase in folded:
+        return True
+    return bool(wanted) and wanted <= _content_words(folded)
 
 
 def _year_field(document: CompiledDocument) -> str:
@@ -210,17 +230,16 @@ def _shaped(plan: V3QuestionPlan, *shapes: QuestionShape) -> bool:
 def _phrasing_may_route(plan: V3QuestionPlan) -> bool:
     """Whether wording may still route a question the router did not shape.
 
-    The router reads every question, so a question it shaped has an answer
-    about which operation applies, and wording must not overrule it. Only a
-    question it never saw — because classification is off, or the call failed
-    — falls back to recognising phrasings.
+    A confident routing is a verdict and wording must not overrule it: where
+    it names an operation the plan already carries it, and where it says the
+    question is not structured at all, no executor should fire. An unsure
+    routing is not a verdict, though, and suppressing wording there leaves the
+    question with nothing when the phrasing would have answered it.
     """
     shape = plan.shape_plan
-    return (
-        not shape.routes
-        and shape.shape == QuestionShape.SYNTHESIS
-        and not shape.confident
-    )
+    if shape.routes:
+        return False
+    return not (shape.confident and shape.shape == QuestionShape.SYNTHESIS)
 
 
 def _operation(plan: V3QuestionPlan, kind: OperationKind):
@@ -1031,6 +1050,11 @@ def _generic_needle_answer(
                 else (f"first recorded {event}" if event else "first recorded")
             )
             label = f"The {phrase}" if phrase != "first recorded" else "The event"
+            # A routed event is the model's wording for what the question asks
+            # about, and the document's label for the same thing reads
+            # differently — "of Etna" against "of the Etna volcano". Requiring
+            # the phrase to appear whole would miss it, so require its words.
+            wanted = _content_words(phrase)
             # The compiler bound this figure to the label that names it. A
             # fact card carries no sentence punctuation, so re-reading its raw
             # text matches the first number in the whole card — an area or a
@@ -1039,7 +1063,7 @@ def _generic_needle_answer(
                 (
                     item
                     for item in record.number_facts
-                    if phrase in item.label.casefold()
+                    if _label_covers(item.label, phrase, wanted)
                 ),
                 None,
             )

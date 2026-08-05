@@ -392,7 +392,15 @@ class FullScanPipeline:
         dismissed = self._dismissed_matches(plan, compiled, question_results)
         should_repair = self._evidence_needs_repair(plan, packet) or bool(dismissed)
         if should_repair:
-            selected = dismissed or self._lexical_repair_records(plan, compiled)
+            # Both selections answer different questions — which records the
+            # scan dismissed, and which records the question's words point at
+            # — so revisiting only one of them narrows what repair can find.
+            selected = list(
+                {
+                    record.record_id: record
+                    for record in [*dismissed, *self._lexical_repair_records(plan, compiled)]
+                }.values()
+            )[:8]
             repaired = await self._mapper.map_selected_records(
                 compiled,
                 selected,
