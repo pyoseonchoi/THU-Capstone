@@ -12,7 +12,7 @@ from app.schemas import DocumentPage
 from app.v3.models import CompiledDocument, CompiledRecord, NumberFact
 from app.v3.table_compiler import compile_contents, compile_tables
 
-COMPILER_VERSION = "v3.2"
+COMPILER_VERSION = "v3.3"
 
 _HEADING_PREFIX_RE = re.compile(r"^#{1,6}\s*")
 _HEADING_RE = re.compile(r"^(?P<marks>#{1,6})\s+(?P<title>.+?)\s*$")
@@ -29,10 +29,13 @@ _BACK_MATTER_RE = re.compile(
 )
 _TITLE_EXCLUSIONS = {
     "contents",
+    "table of contents",
     "introduction",
-    "research programme",
-    "field notes",
-    "interpreting the figures",
+    "overview",
+    "executive summary",
+    "preface",
+    "foreword",
+    "appendix",
     "key facts",
     "facts and figures",
     "at a glance",
@@ -59,13 +62,28 @@ _INLINE_FACT_ITEM_RE = re.compile(
     r"^(?P<label>[A-Za-z][^\d;]{0,120}?)\s+"
     r"(?P<raw>[<>]?\s*-?\d[\d,.]*(?:\.\d+)?)\s*(?P<unit>.*)$"
 )
+# Image-caption arrows never introduce a chapter title.
+_CAPTION_PREFIXES = ("↓", "↑", "→", "←")
+# A banner such as "12 SPAIN" labels a chapter but is not its title.
+_ORDINAL_BANNER_RE = re.compile(r"^\d{1,3}\s+[A-Z][A-Z\s'\-]*$")
+# A zero-padded entry such as "03 Omey Island" belongs to a numbered sub-list.
+_LIST_ENTRY_RE = re.compile(r"^0\d\s+\S")
+# A heading repeated at least this often is per-record furniture, not a title.
+_BOILERPLATE_MIN_REPEATS = 3
 
 _COUNTRY_ALIASES = {
     "Albania": ("albania", "albanian"),
+    "Argentina": ("argentina", "argentinian", "argentine"),
+    "Australia": ("australia", "australian"),
     "Austria": ("austria", "austrian"),
+    "Brazil": ("brazil", "brazilian"),
     "Bulgaria": ("bulgaria", "bulgarian"),
+    "Canada": ("canada", "canadian"),
+    "Chile": ("chile", "chilean"),
+    "China": ("china", "chinese"),
     "Croatia": ("croatia", "croatian"),
     "Denmark": ("denmark", "danish"),
+    "Egypt": ("egypt", "egyptian"),
     "England": ("england", "english"),
     "Estonia": ("estonia", "estonian"),
     "Finland": ("finland", "finnish"),
@@ -74,11 +92,18 @@ _COUNTRY_ALIASES = {
     "Greece": ("greece", "greek"),
     "Hungary": ("hungary", "hungarian"),
     "Iceland": ("iceland", "icelandic"),
+    "India": ("india", "indian"),
     "Ireland": ("ireland", "irish"),
     "Italy": ("italy", "italian"),
+    "Japan": ("japan", "japanese"),
+    "Kenya": ("kenya", "kenyan"),
+    "Korea": ("korea", "korean"),
     "Latvia": ("latvia", "latvian"),
     "Lithuania": ("lithuania", "lithuanian"),
+    "Mexico": ("mexico", "mexican"),
     "Montenegro": ("montenegro", "montenegrin"),
+    "New Zealand": ("new zealand", "new zealanders", "kiwi"),
+    "Nigeria": ("nigeria", "nigerian"),
     "Norway": ("norway", "norwegian"),
     "Poland": ("poland", "polish"),
     "Portugal": ("portugal", "portuguese"),
@@ -86,10 +111,12 @@ _COUNTRY_ALIASES = {
     "Scotland": ("scotland", "scottish", "scots"),
     "Slovakia": ("slovakia", "slovakian", "slovak"),
     "Slovenia": ("slovenia", "slovenian"),
+    "South Africa": ("south africa", "south african"),
     "Spain": ("spain", "spanish"),
     "Sweden": ("sweden", "swedish"),
     "Switzerland": ("switzerland", "swiss"),
     "Ukraine": ("ukraine", "ukrainian"),
+    "United States": ("united states", "usa", "us", "american"),
     "Wales": ("wales", "welsh"),
 }
 
@@ -517,6 +544,162 @@ def _marker_pages(pages: Iterable[DocumentPage]) -> list[int]:
     return [page.page_number for page in pages if _fact_marker(page.text)]
 
 
+def _page_headings(pages: list[DocumentPage]) -> dict[int, list[str]]:
+    """Return every Markdown heading title found on each page."""
+    headings: dict[int, list[str]] = {}
+    for page in pages:
+        titles: list[str] = []
+        for line in page.text.splitlines():
+            parsed = _heading(line)
+            if parsed:
+                titles.append(parsed[1].strip())
+        headings[page.page_number] = titles
+    return headings
+
+
+def _is_title_like(line: str, boilerplate: set[str]) -> bool:
+    """Reject chapter furniture, captions, credits, and list entries."""
+    text = _clean_line(line)
+    if not text or text.startswith(_CAPTION_PREFIXES):
+        return False
+    if not 3 <= len(text) <= 120 or not re.search(r"[A-Za-z]{3}", text):
+        return False
+    if text.casefold() in _TITLE_EXCLUSIONS or _is_fact_section_title(text):
+        return False
+    # Photo credits, standalone category labels, the "12 SPAIN" ordinal banner,
+    # and numbered trail entries all sit beside the title but are never it.
+    if "|" in text or _ORDINAL_BANNER_RE.match(text) or _LIST_ENTRY_RE.match(text):
+        return False
+    if text == text.upper():
+        return False
+    folded = text.casefold()
+    return not any(
+        folded == item.casefold() or folded.startswith(item.casefold())
+        for item in boilerplate
+    )
+
+
+def _opening_title(opening: list[DocumentPage], boilerplate: set[str]) -> str:
+    """Pick the entity title from the pages that open a chapter.
+
+    A chapter can start on a full-bleed photo page whose only text is a
+    caption, so the search continues onto the following pages until the
+    recurring chapter furniture begins.
+    """
+    for page in opening:
+        for title in _page_headings([page])[page.page_number]:
+            if _is_title_like(title, boilerplate):
+                return title[:120]
+        for raw_line in page.text.splitlines():
+            if _is_title_like(raw_line, boilerplate):
+                return _clean_line(raw_line)
+    return ""
+
+
+def _cycle_segments(
+    pages: list[DocumentPage],
+) -> list[tuple[int, int, str]] | None:
+    """Segment repeated chapters by their recurring boilerplate headings.
+
+    Publication chapters repeat the same furniture headings ("Stay here...",
+    "Research programme"). The most frequent one occurs exactly once per
+    record, so its occurrences calibrate both the record count and the
+    chapter boundaries without relying on domain vocabulary.
+    """
+    per_page = _page_headings(pages)
+    frequency = Counter(title for titles in per_page.values() for title in titles)
+    boilerplate = {
+        title
+        for title, count in frequency.items()
+        if count >= _BOILERPLATE_MIN_REPEATS
+    }
+    if not boilerplate:
+        return None
+    marker, occurrences = max(
+        ((title, frequency[title]) for title in boilerplate),
+        key=lambda item: item[1],
+    )
+    if occurrences < 3:
+        return None
+    marker_pages = [
+        number for number, titles in sorted(per_page.items()) if marker in titles
+    ]
+
+    numbers = sorted(per_page)
+    position = {number: index for index, number in enumerate(numbers)}
+    starts: list[int] = []
+    for order, marker_page in enumerate(marker_pages):
+        floor = marker_pages[order - 1] if order else numbers[0] - 1
+        start = marker_page
+        walker = position[marker_page]
+        while walker - 1 >= 0:
+            candidate = numbers[walker - 1]
+            if candidate <= floor:
+                break
+            titles = per_page[candidate]
+            if titles and all(title in boilerplate for title in titles):
+                walker -= 1
+                continue
+            start = candidate
+            break
+        starts.append(start)
+
+    by_number = {page.page_number: page for page in pages}
+    segments: list[tuple[int, int, str]] = []
+    for order, start in enumerate(starts):
+        end = starts[order + 1] - 1 if order + 1 < len(starts) else numbers[-1]
+        opening: list[DocumentPage] = []
+        for number in range(start, end + 1):
+            page = by_number.get(number)
+            if page is None:
+                continue
+            if opening and any(title in boilerplate for title in per_page[number]):
+                break
+            opening.append(page)
+        segments.append((start, end, _opening_title(opening, boilerplate)))
+    return segments
+
+
+def _cycle_records(
+    pages: list[DocumentPage],
+    segments: list[tuple[int, int, str]],
+) -> list[CompiledRecord]:
+    """Build compiled records from boilerplate-cycle chapter boundaries."""
+    by_number = {page.page_number: page for page in pages}
+    records: list[CompiledRecord] = []
+    for index, (start, end, title) in enumerate(segments):
+        selected = [
+            by_number[number]
+            for number in range(start, end + 1)
+            if number in by_number
+        ]
+        if not selected:
+            continue
+        text = "\n\n".join(
+            f"[Page {page.page_number}]\n{page.text}" for page in selected
+        )
+        anchor = next(
+            (page.page_number for page in selected if _fact_marker(page.text)),
+            start,
+        )
+        record_id = f"record-{index + 1:03d}"
+        facts = parse_number_facts(record_id, anchor, by_number[anchor].text)
+        if not facts:
+            facts = parse_inline_number_facts(record_id, start, text)
+        records.append(CompiledRecord(
+            record_id=record_id,
+            ordinal=index + 1,
+            title=title or f"Record {index + 1}",
+            country=_find_country(text),
+            page_start=start,
+            page_end=end,
+            anchor_page=anchor,
+            text=text,
+            number_facts=facts,
+        ))
+    return records
+
+
 def _back_matter_start(pages: list[DocumentPage], after_page: int) -> int | None:
     for page in pages:
         if page.page_number <= after_page:
@@ -755,6 +938,38 @@ def compile_document(
             number_facts=parse_number_facts(record_id, anchor, page_by_number[anchor].text),
         ))
 
+    toc_count = _toc_count(pages, titles[0][0])
+
+    def integrity(candidate: list[CompiledRecord], expected: int) -> tuple[bool, int]:
+        distinct = len({record.title.casefold() for record in candidate})
+        return (
+            len(candidate) == expected
+            and distinct == len(candidate)
+            and (not toc_count or toc_count == len(candidate))
+            and not any(record.title.startswith("Record ") for record in candidate)
+        ), distinct
+
+    trusted, unique_titles = integrity(records, len(anchors))
+    segmentation = "fact_sections"
+    if not trusted:
+        # Fact-section anchors merge chapters whose fact box was lost in
+        # conversion. Recurring chapter furniture calibrates the true record
+        # count without relying on any domain vocabulary.
+        segments = _cycle_segments(pages)
+        if segments:
+            candidate = _cycle_records(pages, segments)
+            candidate_trusted, candidate_titles = integrity(candidate, len(segments))
+            if candidate and candidate_titles > unique_titles:
+                records = candidate
+                trusted, unique_titles = candidate_trusted, candidate_titles
+                segmentation = "boilerplate_cycle"
+    if not trusted:
+        warnings.append("Repeated-entity registry failed an integrity check")
+    if toc_count and toc_count != len(records):
+        warnings.append(
+            f"Contents lists {toc_count} entities but compiler found {len(records)}"
+        )
+
     assigned_pages = {
         number
         for record in records
@@ -768,20 +983,6 @@ def compile_document(
         unassigned_pages,
         prefix="supplement",
     )
-    unique_titles = len({record.title.casefold() for record in records})
-    toc_count = _toc_count(pages, titles[0][0])
-    trusted = (
-        len(records) == len(anchors)
-        and unique_titles == len(records)
-        and (not toc_count or toc_count == len(records))
-        and not any(record.title.startswith("Record ") for record in records)
-    )
-    if not trusted:
-        warnings.append("Repeated-entity registry failed an integrity check")
-    if toc_count and toc_count != len(records):
-        warnings.append(
-            f"Contents lists {toc_count} entities but compiler found {len(records)}"
-        )
 
     marker = _fact_marker(page_by_number[anchors[0]].text)
     marker_title = marker[1] if marker else "entity"
@@ -810,6 +1011,7 @@ def compile_document(
             "unique_titles": unique_titles,
             "contents_entries": toc_count,
             "assigned_pages": len(assigned_pages),
+            "segmentation": segmentation,
         },
         warnings=warnings,
     )

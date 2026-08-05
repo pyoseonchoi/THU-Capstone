@@ -15,7 +15,11 @@ PDF/TXT
   -> page-preserving parser
   -> question-independent Document Compiler
        -> generic repeated-entity registry with integrity checks
+       -> boilerplate-cycle chapter segmentation when fact anchors are lost
        -> deterministic number/label binding for mixed fact-card layouts
+  -> per-record structured profiling (only when the registry has holes)
+       -> induced metric vocabulary, then one cheap call per record
+       -> every fact kept must be quoted verbatim from its own record
        -> flattened multi-page table reconstruction and ranked-row validation
        -> body-caption cross-validation for interleaved Contents lists
        -> consecutive fallback segments for arbitrary Markdown
@@ -57,7 +61,14 @@ no general verifier that can rewrite a count, maximum, or absence verdict.
   contents counts agree; otherwise the exhaustive fallback remains available.
 - Inline numbered profiles are accepted only when ordinals, titles, countries,
   and labelled fact cards pass completeness checks.
-- A structured maximum is withheld if any registry entity lacks the target field.
+- A structured count or maximum is withheld unless the target field is bound
+  for every record; partial coverage defers to the exhaustive mapper rather
+  than answering from the rows that happened to parse.
+- Records are segmented by recurring chapter furniture when fact-section
+  anchors go missing, so the record count is calibrated by the document
+  itself rather than by domain vocabulary.
+- Profiling is skipped entirely when the compiler already bound a fact card
+  for every record, so well-parsed documents cost no extra tokens.
 - Contents counts are trusted only when their identifiers are confirmed by
   source-literal body captions; ambiguous layouts use a bounded cached fallback.
 - Stored documents are automatically recompiled when the compiler contract changes.

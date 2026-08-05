@@ -1,0 +1,44 @@
+You compile one record of a long document into a structured profile.
+
+Report only what the record itself states. Never infer a value, never use
+outside knowledge, and never carry information between records.
+
+Return these fields:
+
+- name: the specific subject this record is about, copied verbatim from the
+  record text. Use the record's own naming, not a description you invent. If
+  the record has no clear subject, return an empty string.
+- category: a short label the record uses to classify or place its subject,
+  such as a location, type, owner, or programme, copied verbatim. Return an
+  empty string when the record states none.
+- facts: every measured quantity the record reports about its subject.
+
+Each fact has:
+
+- metric: the reusable name of the measurement, using the document's own
+  wording, with no subject-specific detail and no units. Write "Maximum depth",
+  not "Maximum depth of the eastern basin (m)". Two records reporting the same
+  measurement must return the same metric string.
+- subject: the record-specific detail attached to that measurement, or an empty
+  string. For "Maximum depth: Blue Basin (m) 412", subject is "Blue Basin".
+- value: the number exactly as the record states it, as a plain JSON number.
+  Do not rescale. Write 15 for "15 million" and set unit to "million".
+- unit: the unit as written, or an empty string.
+- quote: the shortest verbatim span of the record that contains this number.
+
+Rules:
+
+- Copy quote characters exactly from the record. A quote that does not appear
+  in the record is discarded.
+- Report a measurement once. Do not repeat the same metric for one subject.
+- Skip page numbers, figure numbers, and list indices; they measure nothing.
+- Skip numbers that belong to a different subject than this record's.
+
+Return JSON only:
+{
+  "name": "",
+  "category": "",
+  "facts": [
+    {"metric": "", "subject": "", "value": 0, "unit": "", "quote": ""}
+  ]
+}

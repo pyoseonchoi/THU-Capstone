@@ -51,6 +51,7 @@ from app.v3.models import (
     V3QuestionPlan,
 )
 from app.v3.question_compiler import compile_questions
+from app.v3.record_profiler import RecordProfiler
 from app.v3.reducers import (
     build_evidence_packet,
     reduce_absence,
@@ -83,6 +84,7 @@ class FullScanPipeline:
         self._mapper = ExhaustiveMapper(self._router, self._tracker, settings)
         self._answerer = V3Answerer(self._router, self._tracker)
         self._augmenter = StructureAugmenter(self._router, self._tracker, settings)
+        self._profiler = RecordProfiler(self._router, self._tracker, settings)
         self._store = RunStore(settings)
 
     async def process_document(
@@ -103,6 +105,7 @@ class FullScanPipeline:
         save_parsed_output(metadata, pages, self._settings.parsed_dir)
         compiled = compile_document(metadata.document_id, pages)
         compiled = await self._augmenter.augment(compiled)
+        compiled = await self._profiler.profile(compiled)
         records = all_mapping_records(compiled)
         chunks = [
             self._record_chunk(metadata.document_id, index, record)
@@ -190,6 +193,7 @@ class FullScanPipeline:
         if compiled is None:
             return None
         compiled = await self._augmenter.augment(compiled)
+        compiled = await self._profiler.profile(compiled)
         self._store.save_compiled_document(compiled)
         return compiled
 
@@ -211,6 +215,7 @@ class FullScanPipeline:
             self._tracker,
             self._settings,
         )
+        self._profiler = RecordProfiler(self._router, self._tracker, self._settings)
         started = time.perf_counter()
         run = PipelineRun(
             document_id=document_id,

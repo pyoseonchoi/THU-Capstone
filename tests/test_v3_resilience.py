@@ -467,9 +467,13 @@ def test_structured_answers_include_comparison_and_outlier_value():
     visitor_result = execute_structured(visitors, document)
     unit_result = execute_structured(units, document)
 
-    assert visitor_result is not None
-    assert "15,000,000" in visitor_result.answer
-    assert "Écrins National Park reports 800,000" in visitor_result.answer
+    # Only two of the three records bind a visitor figure, so the largest one
+    # cannot be proven from the compiled table: the unbound record may hold a
+    # bigger number. The deterministic path must decline and let the
+    # exhaustive mapper read every record instead of answering from the rows
+    # that happened to parse.
+    assert visitor_result is None
+    # Area is bound for every record, so the unit outlier stays deterministic.
     assert unit_result is not None
     assert "1151 sq miles" in unit_result.answer
     assert "other park cards use sq km" in unit_result.answer
@@ -495,281 +499,8 @@ def _theme_record(
     )
 
 
-def test_document_wide_theme_executors_preserve_scoring_evidence():
+def test_generic_needle_executor_preserves_exact_details():
     records = [
-        _theme_record(
-            "r01",
-            "Curonian Spit National Park",
-            1,
-            (
-                "It is possible to continue into Kaliningrad, across the Russian "
-                "border. Park in numbers 98 Length of the spit - 52 of which is in "
-                "Lithuania (km)."
-            ),
-        ),
-        _theme_record(
-            "r02",
-            "Wadden Sea National Park",
-            2,
-            (
-                "Denmark's national park reaches the German border, and the Wadden "
-                "Sea continues through Germany into the Netherlands. "
-                "3 Countries sharing the Wadden Sea eco-region."
-            ),
-        ),
-        _theme_record(
-            "r03",
-            "Tatras National Park",
-            3,
-            (
-                "Since 1992, the Polish side has been twinned with Tatransky Narodny "
-                "Park across the Slovakian border."
-            ),
-        ),
-        _theme_record(
-            "r04",
-            "Abisko National Park",
-            4,
-            (
-                "Reindeer husbandry is still prevalent among Sami communities. "
-                "Glaciers have retreated from the valleys they once filled."
-            ),
-        ),
-        _theme_record(
-            "r05",
-            "Carpathian National Nature Park",
-            5,
-            "Above the tree line the Hutsuls herd sheep in summer and make cheese.",
-        ),
-        _theme_record(
-            "r06",
-            "Cinque Terre National Park",
-            6,
-            (
-                "Terraced vines are supported by drystone walls, all built by hand. "
-                "Tourists began to trickle in, but this has become a flood, so visitors "
-                "must now buy a ticket."
-            ),
-        ),
-        _theme_record(
-            "r07",
-            "Cairngorms National Park",
-            7,
-            (
-                "The landscape is a legacy of the last ice age, when glaciers gouged "
-                "deep valleys and corries through the bedrock."
-            ),
-        ),
-        _theme_record(
-            "r08",
-            "Jostedalsbreen National Park",
-            8,
-            "Under global warming, recent years have seen the glaciers shrink markedly.",
-        ),
-        _theme_record("r09", "Vatnajokull National Park", 9, "A living ice cap."),
-        _theme_record(
-            "r10",
-            "Plitvice National Park",
-            10,
-            (
-                "Plitvice was embroiled in the 1990s conflict and entered the World "
-                "Heritage in Danger list because of the risk of mines."
-            ),
-        ),
-        _theme_record(
-            "r11",
-            "Abruzzo National Park",
-            11,
-            (
-                "ABRUZZO CHAMOIS had almost died out with a few dozen left, but the "
-                "population now numbers over 2000."
-            ),
-        ),
-        _theme_record(
-            "r12",
-            "Donana National Park",
-            12,
-            "The Iberian lynx is the world's most endangered species of wild cat.",
-            number_facts=[
-                NumberFact(
-                    record_id="r12",
-                    field="number_of_iberian_lynx_in_2015",
-                    label="Number of Iberian lynx in 2015",
-                    value=76,
-                    raw_value="76",
-                    page=12,
-                    quote="76 Number of Iberian lynx in 2015",
-                )
-            ],
-        ),
-        _theme_record(
-            "r13",
-            "Saxon Switzerland National Park",
-            13,
-            ("Dams decimated the Elbe salmon populations, but they have bounced back."),
-        ),
-    ]
-    document = CompiledDocument(
-        document_id="doc",
-        record_kind="repeated_entity",
-        records=records,
-    )
-    questions = {
-        "absence": (
-            "Of poaching, wartime damage, glacier retreat, and pressure from visitor "
-            "numbers, which threat is never raised?"
-        ),
-        "border": (
-            "Which parks extend across, or are formally paired across, an international border?"
-        ),
-        "human": (
-            "How does the book portray the relationship between human habitation and wilderness?"
-        ),
-        "ice": "How is glaciation used across the park entries?",
-        "wildlife": ("How does species conservation treat threatened wildlife across entries?"),
-    }
-    answers: dict[str, str] = {}
-    for key, question in questions.items():
-        plan = V3QuestionPlan(
-            question_id=key,
-            question=question,
-            strategy=(
-                Strategy.ABSENCE_MATRIX if key == "absence" else Strategy.HIERARCHICAL_SYNTHESIS
-            ),
-        )
-        result = execute_structured(plan, document)
-        assert result is not None
-        answers[key] = result.answer
-
-    assert "Poaching" in answers["absence"]
-    assert "Jostedalsbreen" in answers["absence"]
-    assert "Cinque Terre" in answers["absence"]
-    assert "Plitvice" in answers["absence"]
-    assert "52 km of the 98 km" in answers["border"]
-    assert "Denmark, Germany and the Netherlands" in answers["border"]
-    assert "since 1992" in answers["border"]
-    assert "inhabited, working landscapes" in answers["human"]
-    assert "Sámi" in answers["human"]
-    assert "Hutsuls" in answers["human"]
-    assert "global warming" in answers["ice"]
-    assert "Abruzzo chamois" in answers["wildlife"]
-    assert "76 counted in 2015" in answers["wildlife"]
-    assert "Elbe salmon" in answers["wildlife"]
-
-
-def test_designation_absence_requires_presence_checks_for_other_options():
-    records = [
-        _theme_record(
-            "r01",
-            "Durmitor National Park",
-            1,
-            "Durmitor has been on the Unesco World Heritage List since 1980.",
-        ),
-        _theme_record(
-            "r02",
-            "Retezat National Park",
-            2,
-            "Unesco biosphere reserve status arrived in 1979.",
-        ),
-        _theme_record(
-            "r03",
-            "Slovensky Raj",
-            3,
-            "The protected patchwork contains 11 national nature reserves.",
-        ),
-    ]
-    document = CompiledDocument(
-        document_id="doc",
-        record_kind="repeated_entity",
-        records=records,
-    )
-    plan = V3QuestionPlan(
-        question_id="d08",
-        question=(
-            "Of Natura 2000, Unesco World Heritage status, Unesco biosphere reserve "
-            "status, and national nature reserves, which is never mentioned?"
-        ),
-        strategy=Strategy.ABSENCE_MATRIX,
-    )
-
-    result = execute_structured(plan, document)
-
-    assert result is not None
-    assert result.answer.startswith("Natura 2000 is the only")
-    assert "World Heritage status appears" in result.answer
-    assert "biosphere reserve status also appears" in result.answer
-    assert "11 national nature reserves" in result.answer
-    assert result.source_pages == [1, 2, 3]
-
-
-def test_designation_climbing_and_icehotel_executors_preserve_exact_details():
-    records = [
-        _theme_record(
-            "r01",
-            "Arcipelago di La Maddalena National Park",
-            1,
-            "The park has been on the tentative list of Unesco World Heritage Sites.",
-            number_facts=[
-                NumberFact(
-                    record_id="r01",
-                    field="year_added_to_unesco_tentative_list",
-                    label="Year added to the Unesco tentative list",
-                    value=2006,
-                    raw_value="2006",
-                    page=1,
-                    quote="2006 Year added to the Unesco tentative list",
-                )
-            ],
-        ),
-        _theme_record(
-            "r02",
-            "Durmitor National Park",
-            2,
-            "Durmitor has been on the Unesco World Heritage List since 1980.",
-        ),
-        _theme_record(
-            "r03",
-            "Lake Skadar National Park",
-            3,
-            "The park was formally nominated for Unesco World Heritage in late 2011.",
-        ),
-        _theme_record(
-            "r04",
-            "Plitvice National Park",
-            4,
-            "Plitvice entered the Unesco World Heritage List in 1979.",
-        ),
-        _theme_record(
-            "r05",
-            "Retezat National Park",
-            5,
-            "Unesco biosphere reserve status arrived in 1979.",
-        ),
-        _theme_record(
-            "r06",
-            "Tatras National Park",
-            6,
-            "The two parks are forming a Unesco biosphere reserve.",
-        ),
-        _theme_record(
-            "r07",
-            "Ecrins National Park",
-            7,
-            (
-                "Edward Whymper, Horace Walker and A. W. Moore made the first ascent "
-                "of Barre des Écrins on 25 June 1864."
-            ),
-        ),
-        _theme_record(
-            "r08",
-            "Snowdonia National Park",
-            8,
-            (
-                "The hard way is the direct ascent of the cliffs at Clogwyn Du'r "
-                "Arddu. Since 1798, Peter Bailey Williams and William Bingley "
-                "completed the first recorded rock climb in Britain on old Cloggy."
-            ),
-        ),
         _theme_record(
             "r09",
             "Abisko National Park",
@@ -785,37 +516,12 @@ def test_designation_climbing_and_icehotel_executors_preserve_exact_details():
         record_kind="repeated_entity",
         records=records,
     )
-    questions = {
-        "unesco": (
-            "Which parks are actually inscribed by Unesco, and which are only "
-            "nominated or on a tentative list?"
-        ),
-        "climbing": (
-            "Two park entries each record a climbing first with a date. "
-            "What are the events and dates?"
-        ),
-        "icehotel": "What did the Icehotel start out as, and in what year?",
-    }
-
-    results = {
-        key: execute_structured(
-            V3QuestionPlan(
-                question_id=key,
-                question=question,
-                strategy=Strategy.HIERARCHICAL_SYNTHESIS,
-            ),
-            document,
-        )
-        for key, question in questions.items()
-    }
-
-    assert all(result is not None for result in results.values())
-    assert "Durmitor, since 1980" in results["unesco"].answer
-    assert "Plitvice, since 1979" in results["unesco"].answer
-    assert "tentative list from 2006" in results["unesco"].answer
-    assert "biosphere reserves" in results["unesco"].answer
-    assert "25 June 1864" in results["climbing"].answer
-    assert "Clogwyn Du'r Arddu" in results["climbing"].answer
-    assert "Peter Bailey Williams and William Bingley" in results["climbing"].answer
-    assert "small igloo-art gallery" in results["icehotel"].answer
-    assert "1989" in results["icehotel"].answer
+    plan = V3QuestionPlan(
+        question_id="icehotel",
+        question="What did the Icehotel start out as, and in what year?",
+        strategy=Strategy.EXHAUSTIVE_LOOKUP,
+    )
+    result = execute_structured(plan, document)
+    assert result is not None
+    assert "small igloo-art gallery" in result.answer
+    assert "1989" in result.answer

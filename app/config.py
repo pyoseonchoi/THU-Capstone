@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     # Vision fallback for low-text pages
     enable_vision_fallback: bool = False
 
+    # Per-record structured profiling. Deterministic reduction needs a fact
+    # table the layout parser alone cannot fill on unfamiliar documents.
+    enable_record_profiling: bool = True
+    profile_min_coverage: float = Field(default=0.3, ge=0.0, le=1.0)
+    profile_vocabulary_sample: int = Field(default=6, ge=0, le=40)
+
     # Pipeline mode
     pipeline_mode: PipelineMode = PipelineMode.ADAPTIVE_HIERARCHICAL
     evaluation_mode: bool = False

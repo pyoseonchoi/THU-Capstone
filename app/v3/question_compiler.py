@@ -14,51 +14,35 @@ from app.v3.models import (
 )
 
 _FIELD_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("highest operating point", "operating elevation", "highest crest"), "highest_point"),
-    (("highest point", "highest summit", "highest peak"), "highest_point"),
-    ((
-        "annual visiting researchers",
-        "annual number of visiting researchers",
-        "visiting researchers per year",
-    ), "annual_visitors"),
-    (("annual visitors", "visitor figure", "number of visitors"), "annual_visitors"),
-    ((
-        "annual generation",
-        "annual output",
-        "pumping-equivalent output",
-        "gigawatt-hours",
-    ), "annual_output"),
-    ((
-        "area monitored",
-        "monitored area",
-        "monitored reservoir",
-        "project area",
-        "largest area",
-        "covers",
-    ), "area"),
-    ((
-        "year established",
-        "establishment year",
-        "station's founding",
-        "commissioned",
-        "commissioning year",
-    ), "establishment_year"),
+    (("highest operating point", "operating elevation", "highest crest", "highest point", "highest summit", "highest peak", "max elevation"), "highest_point"),
+    (("annual visiting researchers", "annual number of visiting researchers", "visiting researchers per year", "annual visitors", "visitor figure", "number of visitors", "visitors per year"), "annual_visitors"),
+    (("annual generation", "annual output", "energy output", "power output", "gigawatt-hours"), "annual_output"),
+    (("area monitored", "monitored area", "project area", "largest area", "total area", "surface area", "covers"), "area"),
+    (("year established", "establishment year", "founding year", "date founded", "commissioned", "commissioning year"), "establishment_year"),
     (("life expectancy",), "life_expectancy_2023"),
     (("gross national income per capita", "gni per capita"), "gni_per_capita_2023"),
     (("human development index value", "hdi value"), "hdi_2023"),
-    (("estimated age", "oldest tree"), "oldest_tree_age"),
-    (("first recorded eruption",), "first_recorded_eruption_year"),
+    (("estimated age", "oldest tree", "age of"), "oldest_tree_age"),
+    (("first recorded eruption", "first eruption"), "first_recorded_eruption_year"),
 )
 
 _GENERIC_CAPITALIZED = {
+    "According",
     "Across",
     "Among",
+    "Based",
+    "Compare",
+    "Count",
     "Counting",
+    "Describe",
+    "Every",
     "Explain",
     "For",
     "How",
     "Identify",
     "In",
+    "List",
+    "Name",
     "Of",
     "State",
     "Taking",
@@ -66,7 +50,10 @@ _GENERIC_CAPITALIZED = {
     "These",
     "Two",
     "What",
+    "When",
+    "Where",
     "Which",
+    "Why",
 }
 
 

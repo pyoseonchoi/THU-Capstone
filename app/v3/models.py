@@ -109,7 +109,7 @@ class CompiledDocument(BaseModel):
     """Question-independent representation produced once per upload."""
 
     document_id: str
-    compiler_version: str = "v3.2"
+    compiler_version: str = "v3.3"
     record_kind: str = "segments"
     entity_label: str = "record"
     records: list[CompiledRecord] = Field(default_factory=list)
@@ -120,10 +120,13 @@ class CompiledDocument(BaseModel):
     contents_pages: list[int] = Field(default_factory=list)
     contents_trusted: bool = False
     field_catalog: list[str] = Field(default_factory=list)
+    # Records a model read in full. For these, a missing metric means the
+    # record does not report it, rather than that parsing failed.
+    profiled_records: list[str] = Field(default_factory=list)
     unassigned_text: str = ""
     page_count: int = 0
     registry_trusted: bool = False
-    registry_signals: dict[str, int] = Field(default_factory=dict)
+    registry_signals: dict[str, int | str] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 

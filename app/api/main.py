@@ -144,10 +144,6 @@ def _serialize_run(run: PipelineRun) -> dict:
                     if answer.coverage
                     else {}
                 ),
-                "verification": [
-                    item.model_dump(mode="json")
-                    for item in answer.verification
-                ],
                 "warnings": answer.warnings,
             }
             for answer in run.answers
