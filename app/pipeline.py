@@ -455,12 +455,18 @@ class FullScanPipeline:
         compiled: CompiledDocument | None = None,
     ) -> ExecutionResult | None:
         if plan.strategy == Strategy.ABSENCE_MATRIX:
-            result = reduce_absence(plan, question_results, expected_record_ids)
+            result = reduce_absence(
+                plan,
+                question_results,
+                expected_record_ids,
+                document=compiled,
+            )
             return result or reduce_absence(
                 plan,
                 question_results,
                 expected_record_ids,
                 allow_partial=True,
+                document=compiled,
             )
         packet = build_evidence_packet(plan, question_results, expected_record_ids)
         return reduce_mapped_structure(plan, packet, compiled)

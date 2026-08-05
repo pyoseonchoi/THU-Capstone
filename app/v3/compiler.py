@@ -178,8 +178,11 @@ def _is_name_cased(text: str) -> bool:
 
 
 def _find_country(record_text: str) -> str:
+    # Only the label is case-insensitive. Folding the value too would let the
+    # capitalisation requirement through, so a sentence reading "... country:
+    # over millennia ..." would be read as a group name.
     explicit = re.search(
-        r"(?i)(?:^|\b)(?:\*\*|__)?country\s*:\s*"
+        r"(?:^|\b)(?:\*\*|__)?(?i:country)\s*:\s*"
         r"(?P<country>[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*){0,4})",
         record_text,
     )

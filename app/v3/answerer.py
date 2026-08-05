@@ -30,7 +30,44 @@ def _parse_answer(raw: str) -> str:
             data = json.loads(match.group(0))
         except json.JSONDecodeError:
             return text
-    return str(data.get("answer", data.get("final_answer", ""))).strip()
+    if not isinstance(data, dict):
+        return _flatten_answer(data)
+    for key in ("answer", "final_answer"):
+        if key in data:
+            return _flatten_answer(data[key])
+    # The model answered with its own object instead of the agreed envelope.
+    # Its fields still hold the facts, so read them rather than discard them.
+    return _flatten_answer(data)
+
+
+def _flatten_answer(value: object) -> str:
+    """Render an answer as prose, whatever shape the model returned it in.
+
+    A model asked for prose sometimes returns an object instead. Stringifying
+    that yields a Python repr — "{'date': 'BC'}" — which reads as nothing and
+    can drop the very figure the question asked for. Walking the structure
+    keeps every leaf, labelled by the key that introduced it.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        parts = [_flatten_answer(item) for item in value]
+        return "; ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, item in value.items():
+            rendered = _flatten_answer(item)
+            if not rendered:
+                continue
+            label = str(key).replace("_", " ").strip()
+            labelled = label.casefold() in rendered.casefold()
+            parts.append(rendered if labelled else f"{label}: {rendered}")
+        return ". ".join(parts)
+    return str(value).strip()
 
 
 def _evidence_score(item) -> tuple[int, float]:

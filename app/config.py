@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     prompt_version_planner: str = "v3"
     prompt_version_mapper: str = "v5"
     prompt_version_verifier: str = "v3"
-    prompt_version_answer: str = "v4"
+    prompt_version_answer: str = "v5"
 
     model_config = {
         # The workspace file holds secrets; the project file holds runtime config.

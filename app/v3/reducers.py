@@ -30,6 +30,11 @@ class _Row:
     unit: str
     page: int
     quote: str
+    # What the figure is measured on, and the group the record belongs to.
+    # A question asking which record leads usually also asks what the leading
+    # thing is called and where it is.
+    subject: str = ""
+    group: str = ""
 
 
 def _dominant_unit(rows) -> str:
@@ -144,12 +149,37 @@ def build_evidence_packet(
     )
 
 
+def _topic_example(
+    assessments: list,
+    document: CompiledDocument | None,
+) -> str:
+    """Name where a present topic is discussed, preferring substantive cover.
+
+    Establishing that the other options are present is half of what an absence
+    question asks, and naming the record that carries each one is the evidence
+    for that half; without it the claim is unsupported assertion.
+    """
+    if document is None:
+        return ""
+    titles = {record.record_id: record.title for record in document.records}
+    ranked = sorted(
+        (item for item in assessments if item.exact_quote),
+        key=lambda item: (item.level != "substantive", item.page),
+    )
+    for item in ranked:
+        title = titles.get(item.record_id, "")
+        if title and not title.startswith("Record "):
+            return title
+    return ""
+
+
 def reduce_absence(
     plan: V3QuestionPlan,
     results: list[V3MapResult],
     expected_record_ids: set[str],
     *,
     allow_partial: bool = False,
+    document: CompiledDocument | None = None,
 ) -> ExecutionResult | None:
     """Reduce a multiple-choice absence matrix, optionally as best effort."""
     if not plan.candidate_topics:
@@ -212,9 +242,13 @@ def reduce_absence(
     missing_topic = absent[0]
     present_topics = [topic for topic in plan.candidate_topics if topic != missing_topic]
     qualifier = "substantively discussed" if substantive_only else "mentioned or raised"
+    covered: list[str] = []
+    for topic in present_topics:
+        example = _topic_example(by_topic[topic], document)
+        covered.append(f"{topic} (for example at {example})" if example else topic)
     answer = (
         f"{missing_topic} is the only subject never {qualifier} anywhere in the book. "
-        f"The other subjects are covered: {', '.join(present_topics)}."
+        f"The other subjects are covered: {', '.join(covered)}."
     )
     evidence = [
         f"{topic}: {assessment.exact_quote} (page {assessment.page})"
@@ -296,6 +330,8 @@ def reduce_mapped_structure(
                     unit=fact.unit,
                     page=fact.page,
                     quote=fact.quote,
+                    subject=fact.subject,
+                    group=record.country,
                 )
     expected_unit = _dominant_unit(rows.values())
     for candidate in packet.evidence:
@@ -334,10 +370,22 @@ def reduce_mapped_structure(
         answer = f"{len(entities)} entities qualify: {', '.join(entities)}."
         used = selected
     else:
-        best = max(rows.values(), key=lambda row: row.value)
+        ranked = sorted(rows.values(), key=lambda row: row.value, reverse=True)
+        best = ranked[0]
         unit = f" {best.unit}" if best.unit else ""
-        answer = f"{best.entity} has the maximum reported value: {best.value:g}{unit}."
-        used = [best]
+        named = f" ({best.subject})" if best.subject else ""
+        where = f", in {best.group}" if best.group else ""
+        answer = (
+            f"{best.entity} reports the highest value: "
+            f"{best.value:g}{unit}{named}{where}."
+        )
+        if len(ranked) > 1:
+            comparison = ", ".join(
+                f"{row.entity} at {row.value:g}{f' {row.unit}' if row.unit else ''}"
+                for row in ranked[1:3]
+            )
+            answer += f" The next highest are {comparison}."
+        used = ranked[:3]
 
     return ExecutionResult(
         question_id=plan.question_id,

@@ -16,6 +16,15 @@ supported answer. Use document_position when the question contrasts earlier
 and later profiles; never call an early example a later one. Every named example
 and every number in the answer must occur in the supplied evidence.
 
+Name what you report. A figure belongs with the entity it describes, its
+units, and where the document states it; a verdict belongs with the record
+that carries it. Where the evidence establishes something through an example,
+name the example rather than the category.
+
 Answer every requested subpart, preserve BC/AD and designation distinctions,
-and be concise. Return JSON only:
+and be concise. Write the answer as plain sentences: never a JSON object, a
+key-value list, or a bare field name. A year before the common era is written
+"475 BC", never as a negative number.
+
+Return JSON only, and the answer must be a plain string:
 {"answer": "complete final answer"}

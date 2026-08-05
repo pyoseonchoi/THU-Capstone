@@ -463,22 +463,54 @@ def _composed_fact_answer(
             else (lambda pair: pair[1].value)
         )
         selector = min if argmin_step else max
+        ordered = sorted(candidates, key=value_key, reverse=not argmin_step)
         record, fact = selector(candidates, key=value_key)
         extreme = _extreme_word(bool(argmin_step), candidates)
-        answer = (
-            f"{record.title} reports the {extreme} {_metric_phrase(target, fact)}: "
-            f"{fact.raw_value or _format_number(fact.value)}"
-            f"{f' {fact.unit}' if fact.unit else ''}."
-        )
+        answer = _extremum_sentence(record, fact, target, extreme, ordered[1:3])
         return ExecutionResult(
             question_id=plan.question_id,
             answer=answer,
-            evidence=[_fact_evidence(record, fact)],
-            source_pages=[fact.page],
+            evidence=[_fact_evidence(other, item) for other, item in ordered[:3]],
+            source_pages=sorted({item.page for _, item in ordered[:3]}),
             complete=True,
             strategy=plan.strategy,
         )
     return None
+
+
+def _extremum_sentence(
+    record: CompiledRecord,
+    fact: NumberFact,
+    field: str,
+    extreme: str,
+    runners_up: list[tuple[CompiledRecord, NumberFact]],
+) -> str:
+    """State an extremum with everything the registry already knows about it.
+
+    A question asking which record leads on a measure is usually also asking
+    what the measured thing is called, where it is, and how far ahead it sits.
+    All three are already bound to the winning row — the fact's subject, the
+    record's group, and the rows either side of it — so leaving them out
+    answers less of the question than the evidence supports.
+    """
+    value = f"{fact.raw_value or _format_number(fact.value)}"
+    if fact.unit:
+        value += f" {fact.unit}"
+    named = f" ({fact.subject})" if fact.subject else ""
+    where = f", in {record.country}" if record.country else ""
+    sentence = (
+        f"{record.title} reports the {extreme} {_metric_phrase(field, fact)}: "
+        f"{value}{named}{where}."
+    )
+    if runners_up:
+        comparison = ", ".join(
+            f"{other.title} at "
+            f"{item.raw_value or _format_number(item.value)}"
+            f"{f' {item.unit}' if item.unit else ''}"
+            for other, item in runners_up
+        )
+        sentence += f" The next highest are {comparison}."
+    return sentence
 
 
 def _sentences(text: str) -> list[str]:
