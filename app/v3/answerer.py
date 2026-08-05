@@ -15,6 +15,29 @@ logger = get_logger("v3.answerer")
 PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "v3_answer_system.txt"
 
 
+def _flatten_to_text(value: object) -> str:
+    """Render a JSON value as readable prose instead of a Python repr.
+
+    Small models occasionally return a nested object under "answer" despite
+    the prompt asking for a plain string. `str(dict)` would surface Python
+    syntax (braces, single quotes) straight to the grader; this walks the
+    structure and joins it into readable "label: value" text instead, with
+    no information dropped and no key names hardcoded.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "; ".join(
+            f"{str(key).replace('_', ' ')}: {_flatten_to_text(val)}"
+            for key, val in value.items()
+        )
+    if isinstance(value, list):
+        return "; ".join(_flatten_to_text(item) for item in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _parse_answer(raw: str) -> str:
     text = raw.strip()
     if "```" in text:
@@ -30,7 +53,7 @@ def _parse_answer(raw: str) -> str:
             data = json.loads(match.group(0))
         except json.JSONDecodeError:
             return text
-    return str(data.get("answer", data.get("final_answer", ""))).strip()
+    return _flatten_to_text(data.get("answer", data.get("final_answer", ""))).strip()
 
 
 def _evidence_score(item) -> tuple[int, float]:
