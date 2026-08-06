@@ -69,8 +69,10 @@ web/
 ├── index.html   3-column grid replaces .app's current single-column flow
 ├── styles.css   new grid + chat-bubble + docked-viewer rules; section-tab
 │                 rules deleted (component removed, not just hidden), and
-│                 likewise `.source-modal`/`.source-modal-backdrop`/
-│                 `.source-modal-panel`/`.source-modal-close` deleted — the
+│                 likewise the entire `/* ---------- source viewer modal
+│                 ---------- */` comment block deleted (all of it — header,
+│                 title, sub, body, loading, backdrop, panel, close-button
+│                 rules, not just the four most obvious ones) — the
 │                 `#source-modal` markup and its close-button/backdrop-click/
 │                 Escape-key handlers in app.js go with it, since docking the
 │                 viewer removes anything to open or close
