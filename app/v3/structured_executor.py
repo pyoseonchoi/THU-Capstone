@@ -1454,15 +1454,38 @@ def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> Execution
         return None
     # The question does not say which measurement disagrees, so look for the
     # field whose rows state one unit everywhere except in a single record.
-    target = plan.target_fields[0] if plan.target_fields else ""
-    # A question about a measurement every record reports is about a widely
-    # reported field, so try those first; a one-off metric that happens to
-    # disagree on units would otherwise win by being alphabetically earlier.
+    # A field the router bound is a verdict and settles which field to check.
+    # A field the compiler merely guessed by matching the question's words
+    # against every field in the document is not a verdict — "park area" can
+    # land on "years humans have been active in the park area" — so it is one
+    # candidate among many. Ranking survives a bad guess where restricting to
+    # it does not.
+    target = (
+        plan.target_fields[0]
+        if plan.target_fields and _shaped(plan, QuestionShape.UNIT_OUTLIER)
+        else ""
+    )
     coverage = Counter(
         fact.field for record in document.records for fact in record.number_facts
     )
+    # A question that says which measurement it is about — "reports its area"
+    # — names the field to check, and that naming is worth more than any
+    # count: two measurements can each have one odd unit, and only one of them
+    # is the one asked about. Failing that, a question about a measurement
+    # every record reports is about a widely reported field, so try those
+    # first; a one-off metric that happens to disagree on units would
+    # otherwise win by being alphabetically earlier.
+    asked = _content_words(plan.question)
     fields = [target] if target else [
-        field for field, _ in sorted(coverage.items(), key=lambda item: (-item[1], item[0]))
+        field
+        for field, _ in sorted(
+            coverage.items(),
+            key=lambda item: (
+                -len(_content_words(item[0].replace("_", " ")) & asked),
+                -item[1],
+                item[0],
+            ),
+        )
     ]
     for field in fields:
         candidates = _facts(document, field)

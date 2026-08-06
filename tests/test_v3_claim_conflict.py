@@ -260,3 +260,74 @@ def test_the_narrowest_contradiction_check_runs_before_the_generic_one():
     assert result is not None
     assert "Gamma Station" in result.answer
     assert "sq miles" in result.answer
+
+
+def test_the_measurement_the_question_names_decides_which_field_is_checked():
+    """Two fields each have one odd unit; only one is what was asked about.
+
+    Ordering by how many records report a field would pick whichever is more
+    common, which is not the same as picking the one the question is about.
+    """
+    document = _document([
+        _record(1, "Alpha Station", "Erebos", "Reports both figures.", [
+            ("area_covered", "Area covered (sq km)", 400.0, "sq km"),
+            ("ice_thickness", "Ice thickness (m)", 900.0, "m"),
+        ]),
+        _record(2, "Beta Station", "Kallos", "Reports both figures.", [
+            ("area_covered", "Area covered (sq km)", 900.0, "sq km"),
+            ("ice_thickness", "Ice thickness (m)", 700.0, "m"),
+        ]),
+        _record(3, "Gamma Station", "Kallos", "Uses older units throughout.", [
+            ("area_covered", "Area covered (sq miles)", 50.0, "sq miles"),
+            ("ice_thickness", "Ice thickness (km)", 1.2, "km"),
+        ]),
+    ])
+    shape = ShapePlan(shape=QuestionShape.SYNTHESIS, confident=False)
+    question = (
+        "Every station reports its ice thickness, but one is reported in "
+        "different units from all the others. Which station, and what units?"
+    )
+    plan = _plan(question, "contradiction", document, shape)
+
+    result = execute_structured(plan, document)
+
+    assert result is not None
+    assert "Gamma Station" in result.answer
+    # The question asked about thickness, not area, even though both qualify.
+    assert "km" in result.answer
+    assert "sq miles" not in result.answer
+
+
+def test_a_field_guessed_from_the_question_does_not_block_a_better_one():
+    """A guessed field is a candidate, not a verdict.
+
+    Matching the question's words against every field in the document can
+    land on a field that merely shares a word — here "station area" reaching
+    a field about years of activity. Restricting the check to that guess
+    leaves the real answer unfound; ranking it first and moving on does not.
+    """
+    document = _document([
+        _record(1, "Alpha Station", "Erebos", "Long-running site.", [
+            ("years_of_activity_in_the_station_area", "Years of activity", 40.0, ""),
+            ("area_covered", "Area covered (sq km)", 400.0, "sq km"),
+        ]),
+        _record(2, "Beta Station", "Kallos", "Newer site.", [
+            ("years_of_activity_in_the_station_area", "Years of activity", 12.0, ""),
+            ("area_covered", "Area covered (sq km)", 900.0, "sq km"),
+        ]),
+        _record(3, "Gamma Station", "Kallos", "Uses the older imperial figure.", [
+            ("area_covered", "Area covered (sq miles)", 50.0, "sq miles"),
+        ]),
+    ])
+    shape = ShapePlan(shape=QuestionShape.SYNTHESIS, confident=False)
+    question = (
+        "Every station area is reported, but one station is reported in "
+        "different units from all the others. Which station, and what units?"
+    )
+    plan = _plan(question, "contradiction", document, shape)
+
+    result = execute_structured(plan, document)
+
+    assert result is not None
+    assert "Gamma Station" in result.answer
+    assert "sq miles" in result.answer
