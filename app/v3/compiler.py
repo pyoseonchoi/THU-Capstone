@@ -239,6 +239,14 @@ def field_id(label: str) -> str:
     return normalized[:80] or "number"
 
 
+# Words that say how many, how precisely, or how often — never what.
+_QUANTITY_WORDS = frozenset({
+    "about", "annual", "annually", "approximate", "approximately", "approx",
+    "around", "average", "billion", "each", "estimated", "every", "figure",
+    "hundred", "million", "monthly", "number", "numbers", "peak", "population",
+    "recorded", "thousand", "total", "value", "week", "weekly", "year",
+    "yearly", "years",
+})
 _FIELD_STOPWORDS = frozenset({
     "a", "an", "and", "at", "been", "by", "for", "have", "in", "is",
     "its", "of", "on", "or", "per", "s", "that", "the", "to", "was", "with",
@@ -249,6 +257,38 @@ def _field_terms(field: str) -> frozenset[str]:
     return frozenset(
         term for term in field.split("_") if term and term not in _FIELD_STOPWORDS
     )
+
+
+def _measured_terms(field: str) -> frozenset[str]:
+    """Return what a field measures, without how much or how often.
+
+    A document writes one metric two ways: "approximate number of visitors
+    annually" beside "million visitors per year". Everything but the thing
+    measured differs, and the words that differ all say how many or how often
+    rather than what. Removing those leaves the metric itself.
+    """
+    return frozenset(_field_terms(field) - _QUANTITY_WORDS)
+
+
+def _drop_label_titles(records: list[CompiledRecord]) -> None:
+    """Unname a record whose title is one of the document's own metric labels.
+
+    A chapter opening on its fact card can leave the first line of that card
+    standing where the title should be, and an answer then reports "Area
+    covered (sq km)" as the name of a place. The document says which lines are
+    labels — it uses them as labels elsewhere — so a title that is one of them
+    names nothing, and leaving it numbered lets profiling find the real name.
+    """
+    labels = {
+        re.sub(r"\s+", " ", fact.label).strip().casefold()
+        for record in records
+        for fact in record.number_facts
+        if fact.label
+    }
+    for record in records:
+        folded = re.sub(r"\s+", " ", record.title).strip().casefold()
+        if folded and folded in labels:
+            record.title = f"Record {record.ordinal}"
 
 
 def merge_synonym_fields(records: list[CompiledRecord]) -> dict[str, str]:
@@ -268,6 +308,7 @@ def merge_synonym_fields(records: list[CompiledRecord]) -> dict[str, str]:
         for fact in record.number_facts:
             holders.setdefault(fact.field, set()).add(record.record_id)
     terms = {field: _field_terms(field) for field in holders}
+    measured = {field: _measured_terms(field) for field in holders}
     # Terms contained by many fields describe a shape common to the document
     # ("number of ...", "length of ...") rather than one specific measurement.
     containers = {
@@ -286,9 +327,17 @@ def merge_synonym_fields(records: list[CompiledRecord]) -> dict[str, str]:
         for folded in order[index + 1:]:
             if folded in mapping or not terms[folded]:
                 continue
-            if not terms[folded] < terms[survivor]:
+            # One field's terms sit inside the other's, or the two name the
+            # same measurement once the quantity words are set aside.
+            contained = terms[folded] < terms[survivor]
+            same_metric = bool(
+                measured[folded]
+                and measured[folded] == measured[survivor]
+                and terms[folded] != terms[survivor]
+            )
+            if not contained and not same_metric:
                 continue
-            if containers[folded] > 2:
+            if contained and containers[folded] > 2:
                 continue
             if not holders[folded].isdisjoint(holders[survivor]):
                 continue
@@ -905,6 +954,7 @@ def _field_catalog(
 def _finalize_fields(records: list[CompiledRecord], tables) -> list[str]:
     """Fold wording variants together, then report what fields remain."""
     merge_synonym_fields(records)
+    _drop_label_titles(records)
     return _field_catalog(records, tables)
 
 

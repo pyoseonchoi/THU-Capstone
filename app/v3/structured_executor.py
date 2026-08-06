@@ -143,6 +143,23 @@ def _format_number(value: float) -> str:
     return f"{value:,.0f}" if value.is_integer() else f"{value:,.2f}".rstrip("0")
 
 
+def _written_value(fact) -> str:
+    """Write a figure the way a reader reads it, never in exponent form.
+
+    A value scaled up from its printed form — "15" under a heading that says
+    millions — keeps a raw text that no longer matches it, and str() on the
+    scaled number reaches for scientific notation.
+    """
+    raw = (fact.raw_value or "").strip()
+    if raw and "e" not in raw.casefold():
+        try:
+            if abs(float(raw.replace(",", "")) - fact.value) < 1e-9:
+                return raw
+        except ValueError:
+            return raw
+    return _format_number(fact.value)
+
+
 def _country_mentions(
     question: str,
     document: CompiledDocument | None = None,
@@ -567,7 +584,7 @@ def _extremum_sentence(
     record's group, and the rows either side of it — so leaving them out
     answers less of the question than the evidence supports.
     """
-    value = f"{fact.raw_value or _format_number(fact.value)}"
+    value = _written_value(fact)
     if fact.unit:
         value += f" {fact.unit}"
     named = f" ({fact.subject})" if fact.subject else ""
@@ -578,8 +595,7 @@ def _extremum_sentence(
     )
     if runners_up:
         comparison = ", ".join(
-            f"{other.title} at "
-            f"{item.raw_value or _format_number(item.value)}"
+            f"{other.title} at {_written_value(item)}"
             f"{f' {item.unit}' if item.unit else ''}"
             for other, item in runners_up
         )

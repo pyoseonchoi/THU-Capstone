@@ -70,3 +70,38 @@ def test_generic_shared_wording_does_not_fold_distinct_metrics():
     assert "number_of_lakes" not in mapping
     assert "number_of_villages" not in mapping
     assert mapping.get("number") is None
+
+
+def test_two_ways_of_writing_one_metric_are_one_field():
+    """"Approximate number of visitors annually" and "million visitors per
+    year" measure the same thing; everything that differs says how many or
+    how often rather than what."""
+    from app.v3.compiler import merge_synonym_fields
+
+    records = [
+        _record(1, [("Approximate number of visitors annually", 800000)]),
+        _record(2, [("Million visitors per year", 15000000)]),
+    ]
+
+    mapping = merge_synonym_fields(records)
+
+    assert len(mapping) == 1
+    assert len({fact.field for record in records for fact in record.number_facts}) == 1
+
+
+def test_a_measurement_label_is_not_a_record_title():
+    """A chapter opening on its fact card must not be named after the card."""
+    from app.v3.compiler import _drop_label_titles
+
+    records = [
+        _record(1, [("Area covered (sq km)", 100)]),
+        _record(2, [("Area covered (sq km)", 200)]),
+    ]
+    records[0].title = "Real Park"
+    records[1].title = "Area covered (sq km)"
+
+    _drop_label_titles(records)
+
+    assert records[0].title == "Real Park"
+    # Left numbered, so profiling can find the name the page actually carries.
+    assert records[1].title == "Record 2"

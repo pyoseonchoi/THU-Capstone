@@ -294,6 +294,13 @@ def _candidate_number(candidate: EvidenceCandidate) -> float | None:
     return parse_number(candidate.exact_quote)
 
 
+def _readable(value: float) -> str:
+    """Write a figure for a reader. Fifteen million is not "1.5e+07"."""
+    if float(value).is_integer():
+        return f"{value:,.0f}"
+    return f"{value:,.4f}".rstrip("0").rstrip(".")
+
+
 def reduce_mapped_structure(
     plan: V3QuestionPlan,
     packet: EvidencePacket,
@@ -377,11 +384,12 @@ def reduce_mapped_structure(
         where = f", in {best.group}" if best.group else ""
         answer = (
             f"{best.entity} reports the highest value: "
-            f"{best.value:g}{unit}{named}{where}."
+            f"{_readable(best.value)}{unit}{named}{where}."
         )
         if len(ranked) > 1:
             comparison = ", ".join(
-                f"{row.entity} at {row.value:g}{f' {row.unit}' if row.unit else ''}"
+                f"{row.entity} at {_readable(row.value)}"
+                f"{f' {row.unit}' if row.unit else ''}"
                 for row in ranked[1:3]
             )
             answer += f" The next highest are {comparison}."
