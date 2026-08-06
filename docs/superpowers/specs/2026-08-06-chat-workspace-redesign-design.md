@@ -68,7 +68,12 @@ Deferred to a follow-up spec once that coordination happens.
 web/
 ├── index.html   3-column grid replaces .app's current single-column flow
 ├── styles.css   new grid + chat-bubble + docked-viewer rules; section-tab
-│                 rules deleted (component removed, not just hidden)
+│                 rules deleted (component removed, not just hidden), and
+│                 likewise `.source-modal`/`.source-modal-backdrop`/
+│                 `.source-modal-panel`/`.source-modal-close` deleted — the
+│                 `#source-modal` markup and its close-button/backdrop-click/
+│                 Escape-key handlers in app.js go with it, since docking the
+│                 viewer removes anything to open or close
 └── app.js       same file, reorganized into three groups of functions
                  (Document panel / Chat panel / Performance panel) sharing
                  one `state` object, as today
@@ -100,7 +105,13 @@ the viewer is permanently docked in the left column.
   state (Live Activity text + model badge, sourced from the same SSE stream
   as today) and finalizes into the answer text + evidence chips. Evidence
   chip's "View in source" no longer opens a modal — it calls
-  `DocumentViewer.showQuote(quote, page)` directly.
+  `openSourceViewer(quote, page)` directly — but that function needs to be
+  refactored first: today it's wired to the modal's own show/hide lifecycle
+  (toggles `#source-modal`'s `classList`, plus backdrop-click/close-button/
+  Escape handlers that open and close it). Docking it permanently means
+  splitting out the render logic (PDF.js page render + highlight, or `<pre>`
+  + `<mark>` for TXT) from that open/close chrome, since there's no longer
+  anything to open or close.
 - Failed runs render as an error-styled assistant bubble in place, instead of
   the current global error banner (upload-time errors keep the banner —
   those aren't a chat turn).
@@ -156,7 +167,8 @@ Performance panel — no new endpoint, no new polling interval.
    completed run's `usage` block folds into the Performance panel's running
    totals.
 6. Clicking a chip's "View in source" → left panel's viewer jumps to that
-   page/quote and highlights it (`DocumentViewer.showQuote`), no modal open/close.
+   page/quote and highlights it (`openSourceViewer`, refactored to render into
+   the docked panel instead of a modal), no open/close transition.
 7. Right panel's cost/token stats also keep refreshing independently via the
    existing 5s `/usage` poll, unchanged.
 
