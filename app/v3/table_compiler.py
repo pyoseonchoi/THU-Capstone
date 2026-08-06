@@ -15,7 +15,7 @@ _CONTENTS_GROUP_RE = re.compile(
     re.I,
 )
 _CONTENTS_ENTRY_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?P<identifier>(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\s+"
+    r"(?<![A-Za-z0-9])(?P<identifier>(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\.?\s+"
     r"(?P<title>.+?)\s+(?P<page>\d{1,3})(?=\s+(?:(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\s+|$)",
     re.I | re.S,
 )

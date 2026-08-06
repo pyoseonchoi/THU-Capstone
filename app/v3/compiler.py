@@ -167,6 +167,22 @@ def _is_shouted_or_listed(text: str) -> bool:
     return bool(re.match(r"^\d{1,3}\b", text))
 
 
+def _is_title_cased(text: str) -> bool:
+    """Whether most words start with a capital, as a genuine name/title would.
+
+    Distinguishes a short proper-noun-style label ("STF Kebnekaise
+    Fjällstation") from an ordinary sentence that merely happens to contain
+    an entity word in passing ("Bird species recorded in the park", "the
+    upper station and cafe have been remodelled...") -- the latter only
+    capitalizes its first word, not most of its words.
+    """
+    words = [word for word in re.split(r"\s+", text) if any(char.isalpha() for char in word)]
+    if not words:
+        return False
+    capitalized = sum(1 for word in words if word[0].isupper())
+    return capitalized / len(words) >= 0.6
+
+
 def _is_record_title(line: str) -> bool:
     text = _clean_line(line)
     folded = text.casefold()
@@ -178,7 +194,13 @@ def _is_record_title(line: str) -> bool:
         return False
     if _is_shouted_or_listed(text):
         return False
-    return bool(_heading(line)) or any(term in folded for term in _ENTITY_TITLE_TERMS)
+    if _heading(line):
+        return True
+    # A non-heading line only counts as a title candidate if it actually
+    # reads like one -- a short, mostly-capitalized name -- rather than an
+    # ordinary sentence that happens to contain an entity word somewhere in
+    # it (which an unqualified substring check would otherwise accept).
+    return _looks_like_entity_title(text) and _is_title_cased(text)
 
 
 def _looks_like_entity_title(text: str) -> bool:
@@ -186,9 +208,15 @@ def _looks_like_entity_title(text: str) -> bool:
 
     Reuses the same category-level terms (park/station/observatory/...) that
     the compiler already assumes for this document family, rather than any
-    literal name specific to one document.
+    literal name specific to one document. Only checks the last two words,
+    since a genuine entity title ends in its category word ("... National
+    Park", "... Fjällstation") -- checking anywhere in the text would also
+    match the word appearing incidentally at the start or middle of an
+    unrelated name or sentence ("Park Hotel Čingov", "Bird species recorded
+    in the park").
     """
-    return any(term in text.casefold() for term in _ENTITY_TITLE_TERMS)
+    tail = " ".join(text.casefold().split()[-2:])
+    return any(term in tail for term in _ENTITY_TITLE_TERMS)
 
 
 _EXPLICIT_COUNTRY_RE = re.compile(

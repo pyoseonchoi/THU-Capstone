@@ -317,16 +317,26 @@ def reduce_claim_compare(
     ]
     numbered = [(item, value) for item, value in numbered if value is not None]
     claims = [item for item, value in numbered if item.role == "claim"]
-    counters = [item for item, value in numbered if item.role == "counterevidence"]
+    counters = [(item, value) for item, value in numbered if item.role == "counterevidence"]
     if not claims or not counters:
         return None
 
     claim_item = max(claims, key=lambda item: item.confidence)
-    counter_item = max(counters, key=lambda item: item.confidence)
     claim_value = _candidate_number(claim_item)
-    counter_value = _candidate_number(counter_item)
-    if claim_value is None or counter_value is None:
+    if claim_value is None:
         return None
+
+    # A counterevidence item whose value equals the claim's isn't actually
+    # conflicting -- two sources stating the same number aren't a
+    # contradiction just because they're phrased differently. Prefer the
+    # highest-confidence counter that genuinely differs, and fall through to
+    # free-form synthesis (which can read the surrounding prose) if none do.
+    differing = [
+        (item, value) for item, value in counters if value != claim_value
+    ]
+    if not differing:
+        return None
+    counter_item, counter_value = max(differing, key=lambda pair: pair[0].confidence)
 
     def describe(item: EvidenceCandidate, value: float) -> str:
         has_unit = item.unit and item.unit.strip().casefold() != "none"
