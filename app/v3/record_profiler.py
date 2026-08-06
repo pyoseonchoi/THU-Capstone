@@ -75,14 +75,46 @@ def _quote_numbers(quote: str) -> list[float]:
     return values
 
 
-def _value_supported(value: float, quote: str) -> bool:
-    """Require the reported number to be present in its own quote."""
-    for candidate in _quote_numbers(quote):
-        if candidate == value:
-            return True
-        if value and abs(candidate - value) <= abs(value) * 1e-6:
-            return True
-    return False
+def _matches(candidate: float, value: float) -> bool:
+    return candidate == value or bool(value) and abs(candidate - value) <= abs(value) * 1e-6
+
+
+def _value_supported(value: float, quote: str, metric: str = "") -> bool:
+    """Require the reported number to be the one its own quote binds to the metric.
+
+    A quote proves nothing by itself when it runs two stats together, the way
+    a fact card does when it lists them one after another: "3479 Highest
+    point: Mulhacén (m) 5000" states a height and a population back to back,
+    and a model reading it can attach either number to either label. Checking
+    only that the claimed value appears somewhere in the quote passes both
+    readings. Requiring it to be the number nearest the metric's own wording
+    picks the one the quote actually pairs it with.
+    """
+    numbers = [
+        (match.start(), reading)
+        for match in _NUMBER_IN_TEXT_RE.finditer(quote)
+        for reading in _quote_numbers(match.group(0))
+    ]
+    if not numbers:
+        return False
+    if len(numbers) == 1:
+        return _matches(numbers[0][1], value)
+    anchor = _label_position(metric, quote)
+    if anchor is None:
+        return any(_matches(candidate, value) for _position, candidate in numbers)
+    nearest = min(numbers, key=lambda item: abs(item[0] - anchor))
+    return _matches(nearest[1], value)
+
+
+def _label_position(metric: str, quote: str) -> int | None:
+    """Return where a metric's own wording sits in its quote, if it does."""
+    folded_quote = quote.casefold()
+    words = [word for word in re.findall(r"[^\W\d_]{3,}", metric.casefold())]
+    for word in words:
+        index = folded_quote.find(word)
+        if index >= 0:
+            return index
+    return None
 
 
 class RecordProfiler:
@@ -285,7 +317,7 @@ class RecordProfiler:
                 if isinstance(raw_value, (int, float))
                 else parse_number(str(raw_value or ""))
             )
-            if value is None or not _value_supported(value, quote):
+            if value is None or not _value_supported(value, quote, metric):
                 continue
             field = metric_field(metric)
             if not field:

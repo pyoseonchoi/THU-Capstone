@@ -12,7 +12,7 @@ from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.v3.compiler import field_id
 from app.v3.models import CompiledDocument, CompiledRecord
-from app.v3.record_profiler import RecordProfiler, metric_field
+from app.v3.record_profiler import RecordProfiler, _value_supported, metric_field
 
 
 class ScriptedClient(BaseLLMClient):
@@ -244,3 +244,72 @@ def test_field_id_strips_record_specific_detail():
     assert field_id("Maximum depth: Red Basin (m)") == "maximum_depth"
     assert field_id("Maximum depth") == "maximum_depth"
     assert field_id("Maximum depth (m)") == "maximum_depth"
+
+
+# _value_supported: a quote proves a value only where it binds it to the metric.
+
+
+def test_a_value_is_supported_when_it_is_the_only_number_in_its_quote():
+    assert _value_supported(862, "Area covered (sq km): 862", "Area covered")
+
+
+def test_a_value_absent_from_its_quote_is_not_supported():
+    assert not _value_supported(999, "Area covered (sq km): 862", "Area covered")
+
+
+def test_the_number_nearer_the_metrics_own_wording_wins_over_a_neighbour():
+    # A fact card states two stats back to back: a height, then a population.
+    # Both numbers are literally present in the quote, so only checking
+    # membership would let either be claimed for either label.
+    quote = "3479 Highest point: Mulhacen (m) 5000"
+
+    assert _value_supported(3479, quote, "Highest point")
+    assert not _value_supported(5000, quote, "Highest point")
+
+
+def test_the_neighbouring_stat_is_still_provable_under_its_own_label():
+    quote = "3479 Highest point: Mulhacen (m) 5000 Number of wild ibex"
+
+    assert _value_supported(5000, quote, "Number of wild ibex")
+    assert not _value_supported(3479, quote, "Number of wild ibex")
+
+
+def test_a_paraphrased_metric_falls_back_to_membership():
+    # The metric's own words do not occur in the quote at all, so there is no
+    # position to anchor on; the older, permissive check is all that applies.
+    quote = "the park counts 5000 free-roaming ibex"
+
+    assert _value_supported(5000, quote, "Number of wild ibex roaming free")
+
+
+def test_a_scale_word_is_still_honoured_next_to_its_label():
+    assert _value_supported(2_000_000, "Visitors: 2 million annually", "Visitors")
+
+
+@pytest.mark.asyncio
+async def test_an_adjacent_stat_cannot_be_claimed_under_the_wrong_label(tmp_path):
+    """Reproduces the Sierra Nevada fact card: height and a population back to
+    back, where a misreading would report the population as the height."""
+    record = _record(
+        "record-001",
+        "[Page 1]\n862\nArea covered (sq km)\n3479\nHighest point: Mulhacen (m)\n"
+        "5000\nNumber of wild ibex roaming free within the park",
+    )
+    profiler, _ = _profiler(tmp_path, {
+        "record-001": {
+            "facts": [
+                # The model misread the card and attached the ibex count to
+                # the height label. The quote it copied spans both stats.
+                {"metric": "Highest point", "value": 5000, "unit": "m",
+                 "subject": "Mulhacen",
+                 "quote": "3479 Highest point: Mulhacen (m) 5000"},
+            ],
+        }
+    })
+
+    document = CompiledDocument(
+        document_id="d", record_kind="repeated_entity", records=[record]
+    )
+    await profiler.profile(document)
+
+    assert record.number_facts == []
