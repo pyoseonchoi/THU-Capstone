@@ -27,7 +27,16 @@ routing and/or prompt caching).
 
 `app/` pipeline logic (parsing, compiling, mapping, reducing, answering) is
 unchanged. This spec's only backend touch is one additive field in
-`_serialize_run`'s usage block (cache-hit summary) — see below.
+`_serialize_run`'s usage block (per-model token split) — see below.
+
+**Cache-hit rate is explicitly out of scope for this pass** (see Non-goals):
+review of the existing code found that a cache hit in
+`app/v3/exhaustive_mapper.py` returns early without ever calling
+`self._tracker.record(...)`, so no `UsageRecord` is created for it — there is
+currently no data to compute a hit rate from. Making that number real would
+require adding a tracker call on the cache-hit path, which touches a
+mapping-stage file another pair is actively changing on `model-update`.
+Deferred to a follow-up spec once that coordination happens.
 
 ## Non-goals (YAGNI)
 
@@ -39,8 +48,14 @@ unchanged. This spec's only backend touch is one additive field in
 - No fabricated "cost if we hadn't routed to a small model" comparison —
   there's no counterfactual run to honestly back that number. Performance
   panel shows real, defensible numbers only: actual per-model token/cost
-  split (already computed, currently drawn as a donut) and real cache-hit
-  rate (computed from `UsageRecord.cached`, not previously surfaced).
+  split (already computed per-call, just not currently surfaced by
+  `_serialize_run`).
+- No cache-hit-rate stat this pass — see Goal section for why (the
+  underlying `UsageRecord.cached` is never actually set today).
+- No resizable columns this pass — fixed 25/50/25 split. Drag-to-resize
+  dividers are a real, feasible follow-up (plain pointer-event drag updating
+  `grid-template-columns`, no library needed) but are deferred so this spec
+  stays focused on the layout/content change; noted under Open items.
 - No chat history persistence across page reload — same in-memory-only
   model as today; `GET /runs/{run_id}` remains the durable fallback.
 - No multi-document workspace — one active document at a time, same as today.
@@ -59,9 +74,10 @@ web/
                  one `state` object, as today
 ```
 
-Column split: 25% / 50% / 25% (`grid-template-columns: 1fr 2fr 1fr`), single
-row, each column independently scrollable. No section tabs, no modal for the
-source viewer — the viewer is permanently docked in the left column.
+Column split: fixed 25% / 50% / 25% (`grid-template-columns: 1fr 2fr 1fr`),
+not resizable this pass (see Non-goals), single row, each column
+independently scrollable. No section tabs, no modal for the source viewer —
+the viewer is permanently docked in the left column.
 
 **Left — Document panel**
 - Upload dropzones (unchanged component, existing delete buttons)
@@ -91,46 +107,39 @@ source viewer — the viewer is permanently docked in the left column.
 
 **Right — Performance panel**
 - Compressed stat row (cost, tokens — same data as today's top stats)
-- New cache-hit-rate stat + per-model token/cost split (same numbers the
-  donut shows today, restyled as a stat block instead of a chart, since a
-  donut and a chat thread's model badges were showing overlapping
-  information)
+- New per-model token/cost split, as a stat block instead of the current
+  donut. This is a deliberate replacement, not just a restyle: the existing
+  donut (`updateDonut` in `web/app.js`) tallies SSE progress-*event* counts
+  per model badge, not actual tokens/cost — the chat thread's per-turn model
+  badges already cover that "which model handled this" signal, so the
+  donut's information is redundant once the thread exists. The new stat
+  block uses real per-call token data via the `by_model` field below.
 - Pipeline Parameters, collapsed under a disclosure at the bottom (same 9
   fields already cleaned up this session — no further changes)
 
 ## Backend changes (additive only)
 
-`run.usage` (`list[UsageRecord]`, each with `.cached: bool`, `.model`,
-`.input_tokens`, `.output_tokens`) is already computed and saved to
-`data/runs/<run_id>.json`, but `_serialize_run` in `app/api/main.py` never
-surfaces it beyond `total_input_tokens`/`total_output_tokens`. Add one
-computed block:
+`run.usage` (`list[UsageRecord]`, each with `.model`, `.input_tokens`,
+`.output_tokens` — real records, written on every actual LLM call; the
+cache-hit gap discussed above only affects a `.cached` flag this spec
+doesn't use) is already computed and saved to `data/runs/<run_id>.json`, but
+`_serialize_run` in `app/api/main.py` never surfaces it beyond
+`total_input_tokens`/`total_output_tokens`. Add one computed block:
 
 ```python
 "usage": {
     "total_input_tokens": run.total_input_tokens,
     "total_output_tokens": run.total_output_tokens,
-    "cache": {
-        "cached_calls": <count where .cached>,
-        "total_calls": len(run.usage),
-        "hit_rate": <cached_calls / total_calls, or None if total_calls == 0>,
-    },
     "by_model": {model: {"input_tokens": ..., "output_tokens": ...}, ...},
 },
 ```
 
-`app.js` accumulates `cache.cached_calls`/`cache.total_calls` and `by_model`
-across every completed run in the session (same accumulation pattern the
-top stat cards already use) to drive the Performance panel — no new
-endpoint, no new polling interval.
+Guard the summation against `None` — `UsageRecord.input_tokens`/
+`output_tokens` are `Optional[int] = None` (treat as 0 when summing).
 
-**Open item to confirm during implementation**: whether a cache-hit
-`UsageRecord` logs the token count the skipped call *would have* used, or
-`0`/`None` since no request was actually sent. This changes whether the
-Performance panel can also claim "tokens saved by cache" or only a hit-rate
-percentage. Check `app/v3/exhaustive_mapper.py`'s cache-write path before
-implementing that specific number; hit-rate itself doesn't depend on the
-answer.
+`app.js` accumulates `by_model` across every completed run in the session
+(same accumulation pattern the top stat cards already use) to drive the
+Performance panel — no new endpoint, no new polling interval.
 
 ## Data flow
 
@@ -166,8 +175,9 @@ answer.
 ## Testing
 
 - Backend: extend `tests/test_api.py` to assert `_serialize_run`'s new
-  `usage.cache` block has correct `hit_rate` arithmetic (including the
-  `total_calls == 0` edge case) against a constructed `PipelineRun` fixture.
+  `usage.by_model` block sums tokens correctly per model, including a
+  `PipelineRun` fixture with at least one `UsageRecord` whose
+  `input_tokens`/`output_tokens` is `None`.
 - Frontend: no test framework, per existing convention. Manually verify
   against mocked `fetch`/`EventSource`: empty state (no document), thinking
   state (turn in progress), completed turn with multi-page evidence (viewer
@@ -175,6 +185,13 @@ answer.
 
 ## Open items carried forward, not blocking
 
-- Exact cache-hit token semantics (see Backend changes above).
+- **Cache-hit rate** (dropped from this pass, see Goal): needs a
+  `self._tracker.record(...)` call added on the cache-hit path in
+  `app/v3/exhaustive_mapper.py`. Coordinate with whoever owns that file on
+  `model-update` before attempting; a follow-up spec once that lands.
+- **Resizable columns** (dropped from this pass, see Non-goals): drag
+  handles between columns, updating `grid-template-columns` on
+  pointermove, clamped to sane min-widths per column. No backend
+  involvement; can be added independently whenever.
 - Whether `Pipeline Parameters` stays collapsed-by-default or expanded —
   low-stakes, decide visually during implementation.
