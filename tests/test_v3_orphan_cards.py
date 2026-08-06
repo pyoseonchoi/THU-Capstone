@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from app.schemas import DocumentPage
-from app.v3.compiler import _claim_orphan_fact_cards
+from app.v3.compiler import _claim_orphan_fact_cards as _claim_cards
+from app.v3.compiler import _page_headings
 
 
 def _pages(cards: set[int], last: int) -> list[DocumentPage]:
@@ -15,6 +16,17 @@ def _pages(cards: set[int], last: int) -> list[DocumentPage]:
         )
         for number in range(1, last + 1)
     ]
+
+
+def _claim_orphan_fact_cards(pages, segments, boilerplate=frozenset()):
+    """Call the claim with the page lookups the compiler builds for it."""
+    return _claim_cards(
+        pages,
+        {page.page_number: page for page in pages},
+        _page_headings(pages),
+        set(boilerplate),
+        segments,
+    )
 
 
 def test_a_card_no_chapter_reads_goes_to_the_chapter_it_faces():
@@ -50,6 +62,28 @@ def test_a_card_far_from_the_opening_page_is_not_claimed():
     segments = [(1, 12, "First"), (13, 20, "Second")]
 
     assert _claim_orphan_fact_cards(pages, segments) == segments
+
+
+def test_a_chapter_that_moves_onto_its_card_is_renamed_from_that_page():
+    # The card faces the text it belongs to, so claiming it usually claims the
+    # chapter's opening page. The old name was read from the page the chapter
+    # used to start on, which is now the page after it.
+    pages = [
+        DocumentPage(page_number=1, text="## Park in numbers\n\n100\nArea (sq km)\n"),
+        DocumentPage(page_number=2, text="Prose about the first chapter.\n"),
+        DocumentPage(
+            page_number=3,
+            text="## Beta Station\n\n## Park in numbers\n\n200\nArea (sq km)\n",
+        ),
+        DocumentPage(page_number=4, text="## Hotel Bellevue\n\nA warm welcome.\n"),
+        DocumentPage(page_number=5, text="More prose.\n"),
+    ]
+    segments = [(1, 3, "First"), (4, 5, "Hotel Bellevue")]
+
+    assert _claim_orphan_fact_cards(pages, segments) == [
+        (1, 2, "First"),
+        (3, 5, "Beta Station"),
+    ]
 
 
 def test_the_number_of_chapters_never_changes():

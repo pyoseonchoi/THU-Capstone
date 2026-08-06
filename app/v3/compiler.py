@@ -669,6 +669,29 @@ def _is_title_like(line: str, boilerplate: set[str]) -> bool:
     )
 
 
+def _lines_before_furniture(page: DocumentPage, boilerplate: set[str]) -> list[str]:
+    """Return the lines a page carries ahead of its recurring chapter furniture.
+
+    A chapter names itself above the sections it repeats. Past the first of
+    those sections the page is inside the chapter, and the headings there name
+    the items a section lists — a guest house, a walk, a dish — never the
+    chapter. Reading one of those as the chapter's name misnames it, and a
+    chapter misnamed after something it merely mentions is worse than one left
+    nameless: a nameless chapter can still be given the page that names it.
+    """
+    lines: list[str] = []
+    for raw_line in page.text.splitlines():
+        parsed = _heading(raw_line)
+        if parsed and parsed[1].strip() in boilerplate:
+            break
+        # The fact card is furniture too, and its first label reads enough
+        # like a name to be mistaken for one on a page that carries no title.
+        if _is_fact_section_title(parsed[1] if parsed else _clean_line(raw_line)):
+            break
+        lines.append(raw_line)
+    return lines
+
+
 def _opening_title(opening: list[DocumentPage], boilerplate: set[str]) -> str:
     """Pick the entity title from the pages that open a chapter.
 
@@ -677,13 +700,27 @@ def _opening_title(opening: list[DocumentPage], boilerplate: set[str]) -> str:
     recurring chapter furniture begins.
     """
     for page in opening:
-        for title in _page_headings([page])[page.page_number]:
-            if _is_title_like(title, boilerplate):
-                return title[:120]
-        for raw_line in page.text.splitlines():
-            if _is_title_like(raw_line, boilerplate):
+        lines = _lines_before_furniture(page, boilerplate)
+        for raw_line in lines:
+            parsed = _heading(raw_line)
+            if parsed and _names_an_entity(parsed[1], boilerplate):
+                return parsed[1].strip()[:120]
+        for raw_line in lines:
+            if _names_an_entity(raw_line, boilerplate):
                 return _clean_line(raw_line)
     return ""
+
+
+def _names_an_entity(line: str, boilerplate: set[str]) -> bool:
+    """Report whether a line both sits where a title sits and reads as one.
+
+    Position alone is not enough. A page can open with a photo credit, a
+    caption run on from the previous spread, or the tail of a sentence, and
+    any of those would otherwise be taken as the chapter's name. Requiring the
+    line to be set like a name as well is the same test the other segmentation
+    path applies, so both paths agree on what a title looks like.
+    """
+    return _is_title_like(line, boilerplate) and _is_record_title(line)
 
 
 def _cycle_segments(
@@ -695,6 +732,12 @@ def _cycle_segments(
     "Research programme"). The most frequent one occurs exactly once per
     record, so its occurrences calibrate both the record count and the
     chapter boundaries without relying on domain vocabulary.
+
+    Several headings can repeat equally often, and which one calibrates the
+    boundaries changes where each chapter is judged to start. Picking from an
+    unordered set left that choice to the interpreter, so the same document
+    compiled two ways in two runs. Every equally frequent heading is tried
+    instead, and the one that names the most chapters wins.
     """
     per_page = _page_headings(pages)
     frequency = Counter(title for titles in per_page.values() for title in titles)
@@ -705,12 +748,31 @@ def _cycle_segments(
     }
     if not boilerplate:
         return None
-    marker, occurrences = max(
-        ((title, frequency[title]) for title in boilerplate),
-        key=lambda item: item[1],
-    )
+    occurrences = max(frequency[title] for title in boilerplate)
     if occurrences < 3:
         return None
+    candidates = sorted(
+        title for title in boilerplate if frequency[title] == occurrences
+    )
+    scored = [
+        (sum(1 for _start, _end, title in segments if title), index, segments)
+        for index, segments in enumerate(
+            _segments_for_marker(pages, per_page, boilerplate, marker)
+            for marker in candidates
+        )
+    ]
+    # Ties fall back to the candidate order, which is sorted, so the result
+    # never depends on how a set happened to be iterated.
+    return max(scored, key=lambda item: (item[0], -item[1]))[2]
+
+
+def _segments_for_marker(
+    pages: list[DocumentPage],
+    per_page: dict[int, list[str]],
+    boilerplate: set[str],
+    marker: str,
+) -> list[tuple[int, int, str]]:
+    """Cut the document into chapters using one recurring heading."""
     marker_pages = [
         number for number, titles in sorted(per_page.items()) if marker in titles
     ]
@@ -735,26 +797,51 @@ def _cycle_segments(
         starts.append(start)
 
     by_number = {page.page_number: page for page in pages}
-    segments: list[tuple[int, int, str]] = []
-    for order, start in enumerate(starts):
-        end = starts[order + 1] - 1 if order + 1 < len(starts) else numbers[-1]
-        opening: list[DocumentPage] = []
-        for number in range(start, end + 1):
-            page = by_number.get(number)
-            if page is None:
-                continue
-            if opening and any(title in boilerplate for title in per_page[number]):
-                break
-            opening.append(page)
-        segments.append((start, end, _opening_title(opening, boilerplate)))
+    segments = [
+        (
+            start,
+            starts[order + 1] - 1 if order + 1 < len(starts) else numbers[-1],
+            "",
+        )
+        for order, start in enumerate(starts)
+    ]
+    segments = [
+        (start, end, _segment_title(by_number, per_page, boilerplate, start, end))
+        for start, end, _title in segments
+    ]
     # Both corrections belong to segmentation, and their order matters: a card
     # is claimed first, then the page that names the chapter it opens.
-    segments = _claim_orphan_fact_cards(pages, segments)
-    return _claim_opening_titles(pages, segments, boilerplate)
+    segments = _claim_orphan_fact_cards(
+        pages, by_number, per_page, boilerplate, segments
+    )
+    segments = _claim_opening_titles(pages, segments, boilerplate)
+    return _claim_named_openings(by_number, boilerplate, segments)
+
+
+def _segment_title(
+    by_number: dict[int, DocumentPage],
+    per_page: dict[int, list[str]],
+    boilerplate: set[str],
+    start: int,
+    end: int,
+) -> str:
+    """Read a chapter's name from the pages that open its range."""
+    opening: list[DocumentPage] = []
+    for number in range(start, end + 1):
+        page = by_number.get(number)
+        if page is None:
+            continue
+        if opening and any(title in boilerplate for title in per_page.get(number, [])):
+            break
+        opening.append(page)
+    return _opening_title(opening, boilerplate)
 
 
 def _claim_orphan_fact_cards(
     pages: list[DocumentPage],
+    by_number: dict[int, DocumentPage],
+    per_page: dict[int, list[str]],
+    boilerplate: set[str],
     segments: list[tuple[int, int, str]],
 ) -> list[tuple[int, int, str]]:
     """Give a fact card that no chapter reads to the chapter it introduces.
@@ -792,7 +879,13 @@ def _claim_orphan_fact_cards(
         if candidate is None:
             continue
         adjusted[index - 1] = (previous_start, candidate - 1, previous_title)
-        adjusted[index] = (candidate, end, title)
+        # The name was read from the page this chapter used to start on. Now
+        # that it starts on the card's page, that page names it — usually the
+        # chapter's own opening page, since a card faces the text it belongs
+        # to. Keeping the old name would label the chapter with whatever item
+        # happened to head the page after it.
+        renamed = _segment_title(by_number, per_page, boilerplate, candidate, end)
+        adjusted[index] = (candidate, end, renamed or title)
     return adjusted
 
 
@@ -828,6 +921,43 @@ def _claim_opening_titles(
             continue
         adjusted[index - 1] = (previous_start, previous_end - 1, previous_title)
         adjusted[index] = (previous_end, end, found)
+    return adjusted
+
+
+def _claim_named_openings(
+    by_number: dict[int, DocumentPage],
+    boilerplate: set[str],
+    segments: list[tuple[int, int, str]],
+) -> list[tuple[int, int, str]]:
+    """Start a nameless chapter on the page inside it that carries a name.
+
+    The heading that calibrates the boundaries can repeat before a chapter's
+    opening page rather than after it, and the cut then lands inside the
+    chapter before: the pages ahead of the name are that chapter's tail, and
+    the nameless range that follows begins too early. Moving the boundary
+    forward to the page that names a chapter hands the name to the chapter it
+    opens and the pages before it back to the one they continue.
+    """
+    adjusted = list(segments)
+    for index in range(1, len(adjusted)):
+        start, end, title = adjusted[index]
+        if title:
+            continue
+        previous_start, previous_end, previous_title = adjusted[index - 1]
+        for number in range(start + 1, end + 1):
+            page = by_number.get(number)
+            if page is None:
+                continue
+            found = _opening_title([page], boilerplate)
+            if not found or found == previous_title:
+                continue
+            # The chapter before takes the pages this one gives up, so it must
+            # still be left with the page it starts on.
+            if number - 1 < previous_start:
+                break
+            adjusted[index - 1] = (previous_start, number - 1, previous_title)
+            adjusted[index] = (number, end, found)
+            break
     return adjusted
 
 
