@@ -9,7 +9,7 @@ from pathlib import Path
 from app.llm.router import LLMRouter
 from app.llm.usage_tracker import UsageTracker
 from app.logging_config import get_logger
-from app.v3.models import EvidencePacket, ExecutionResult, V3QuestionPlan
+from app.v3.models import CompiledDocument, EvidencePacket, ExecutionResult, V3QuestionPlan
 
 logger = get_logger("v3.answerer")
 PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "v3_answer_system.txt"
@@ -49,6 +49,22 @@ def _strip_inline_evidence_tags(text: str) -> str:
     return _INLINE_EVIDENCE_TAG_RE.sub("", text)
 
 
+_INTERNAL_ID_TOKEN_RE = re.compile(
+    r",?\s*(?:segment|chunk|record)-\d+", re.IGNORECASE
+)
+_EMPTY_PARENS_RE = re.compile(r"\(\s*\)")
+
+
+def _strip_internal_id_tokens(text: str) -> str:
+    """Drop internal record/segment/chunk id tokens (e.g. "segment-007") the
+    model may echo verbatim from evidence bookkeeping fields — these read as
+    citations but are meaningless to a reader or grader, and can appear mixed
+    into an otherwise legitimate citation (e.g. "(Figure 1.8, segment-007)").
+    """
+    stripped = _INTERNAL_ID_TOKEN_RE.sub("", text)
+    return _EMPTY_PARENS_RE.sub("", stripped)
+
+
 def _parse_answer(raw: str) -> str:
     text = raw.strip()
     if "```" in text:
@@ -65,7 +81,8 @@ def _parse_answer(raw: str) -> str:
         except json.JSONDecodeError:
             return text
     answer = _flatten_to_text(data.get("answer", data.get("final_answer", ""))).strip()
-    return _strip_inline_evidence_tags(answer).strip()
+    answer = _strip_inline_evidence_tags(answer)
+    return _strip_internal_id_tokens(answer).strip()
 
 
 def _evidence_score(item) -> tuple[int, float]:
@@ -139,6 +156,33 @@ def _evidence_payload(
     ]
 
 
+def _document_structure(
+    plan: V3QuestionPlan,
+    document: CompiledDocument | None,
+) -> list[str] | None:
+    """Ground global-synthesis prose in the document's own real structure.
+
+    Free-form synthesis otherwise writes from the evidence packet alone,
+    which carries no signal for how the source document itself is organized
+    (its actual chapter list, or its actual set of profiled entities). That
+    lets the model invent a plausible-sounding but wrong grouping or thesis.
+    Handing over the document's own verified contents listing (or, absent
+    one, its own record titles) costs little and lets the prompt ask the
+    model to stay consistent with it.
+    """
+    if document is None or plan.category != "global_synthesis":
+        return None
+    if document.contents_entries:
+        labels: list[str] = []
+        for entry in document.contents_entries:
+            label = entry.title or entry.identifier
+            if label and label not in labels:
+                labels.append(label)
+        return labels[:60] or None
+    titles = [record.title for record in document.records if record.title]
+    return titles[:80] or None
+
+
 def _missing_slots(plan: V3QuestionPlan, answer: str) -> list[str]:
     missing: list[str] = []
     if "date" in plan.required_slots and not re.search(
@@ -184,6 +228,7 @@ class V3Answerer:
         self,
         plan: V3QuestionPlan,
         packet: EvidencePacket,
+        document: CompiledDocument | None = None,
     ) -> ExecutionResult:
         if not packet.evidence:
             return ExecutionResult(
@@ -193,10 +238,11 @@ class V3Answerer:
                 warnings=[*packet.warnings, "No complete grounded evidence packet"],
             )
         evidence = _evidence_payload(plan, packet)
+        structure = _document_structure(plan, document)
         warnings = list(packet.warnings)
         used_fallback = False
         try:
-            response = await self._call(plan, evidence)
+            response = await self._call(plan, evidence, structure=structure)
             answer = _parse_answer(response)
         except Exception as exc:
             logger.warning("V3 answer call failed for %s: %s", plan.question_id, exc)
@@ -209,6 +255,7 @@ class V3Answerer:
                 response = await self._call(
                     plan,
                     evidence,
+                    structure=structure,
                     draft=answer,
                     missing=missing,
                 )
@@ -235,6 +282,7 @@ class V3Answerer:
         plan: V3QuestionPlan,
         evidence: list[dict],
         *,
+        structure: list[str] | None = None,
         draft: str = "",
         missing: list[str] | None = None,
     ) -> str:
@@ -246,6 +294,8 @@ class V3Answerer:
             "records_scanned": "all",
             "evidence": evidence,
         }
+        if structure:
+            payload["document_structure"] = structure
         if draft:
             payload["draft_answer"] = draft
             payload["refine_instruction"] = (

@@ -377,7 +377,7 @@ class FullScanPipeline:
                     question_results,
                     expected_record_ids,
                 )
-        return await self._answerer.generate(plan, packet), question_results
+        return await self._answerer.generate(plan, packet, compiled), question_results
 
     @staticmethod
     def _referenced_tables_missing(

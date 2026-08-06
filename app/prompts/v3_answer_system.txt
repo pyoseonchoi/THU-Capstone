@@ -15,7 +15,12 @@ fact directly. For a contradiction, state both claims and explain the
 conflict. For cross-section questions, include every distinct matching case
 represented in the packet. For global synthesis, lead with a clear thesis,
 then list every distinct supporting example from the evidence — do not trim
-to a representative subset.
+to a representative subset. When a "document_structure" list is present, it
+is the document's own verified chapter list or entity roster — treat it as
+ground truth for what the document actually contains and how it is actually
+organized. Never invent a chapter grouping, section split, or entity name
+that contradicts it, and never assign content to a chapter it does not
+belong to.
 
 Length costs nothing except when it states something false, hedges, or
 speculates; omitting a detail that is present in the evidence costs real
