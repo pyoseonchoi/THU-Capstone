@@ -183,9 +183,12 @@ def _find_country(record_text: str) -> str:
     # Only the label is case-insensitive. Folding the value too would let the
     # capitalisation requirement through, so a sentence reading "... country:
     # over millennia ..." would be read as a group name.
+    # A label names its value on the line it appears on. Letting the value run
+    # over a line break makes it swallow the first word of whatever follows,
+    # so "Country: Uzbekistan" above a sentence becomes "Uzbekistan A".
     explicit = re.search(
-        r"(?:^|\b)(?:\*\*|__)?(?i:country)\s*:\s*"
-        r"(?P<country>[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*){0,4})",
+        r"(?:^|\b)(?:\*\*|__)?(?i:country)[^\S\r\n]*:[^\S\r\n]*"
+        r"(?P<country>[A-Z][A-Za-z'\-]*(?:[^\S\r\n]+[A-Z][A-Za-z'\-]*){0,4})",
         record_text,
     )
     if explicit:
