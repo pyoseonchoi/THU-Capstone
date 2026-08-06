@@ -364,7 +364,14 @@ git commit -m "feat(web): replace tabbed shell with a 3-column workspace layout"
 Delete these blocks entirely (search for each selector; they're contiguous rules currently between lines ~151-232 and ~430-537 per the pre-redesign file):
 
 - `.section-tabs`, `.section-tab-indicator`, `.section-tab`, `.section-tab.on`, `.section-panel`, `.section-stack` (and the `.section-stack .row2` line), and the `.section-tabs{width:100%;}` / `.section-tab{flex:1 0 auto;text-align:center;}` lines inside the `@media (max-width:760px)` block.
-- `.row2` and its `@media (max-width:980px)` rule.
+- `.row2` — but **not** the whole media query it lives in. The real file has
+  `@media (max-width:980px){.row2{grid-template-columns:1fr;} .stats{grid-template-columns:repeat(2,1fr);}}`
+  on one line — delete only the `.row2{grid-template-columns:1fr;}` part.
+  Keep `.stats{grid-template-columns:repeat(2,1fr);}`: the plain `.stats`
+  class (not `.stats-compact`) is still used by Task 2's `#settings-grid`
+  markup, and without this rule Pipeline Parameters renders as an
+  uncollapsed 4-column grid on narrow viewports once `.workspace-columns`
+  stacks to one column below 1100px.
 - `.donut-wrap`, `.donut`, `.donut::after`, `.donut-legend`, `.legend-row`, `.swatch`, `.legend-row .n`.
 - `.log`, `.log li`, `.log li:last-child`, `.dot`, `.dot.pending`, `.dot.active`, the `@media (prefers-reduced-motion: reduce){.dot.active{...}}` rule, `@keyframes pulse`, `.log .step`, `.log .step.pending`, `.log .meta`, `.log .time`.
 - `.pillnav`, `.pillnav button`, `.pillnav button.on`.
