@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     # Pipeline mode
     pipeline_mode: PipelineMode = PipelineMode.ADAPTIVE_HIERARCHICAL
     evaluation_mode: bool = False
+    finalize_deterministic_with_llm: bool = False
 
     # Submission metadata
     team_name: str = ""

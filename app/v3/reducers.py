@@ -35,13 +35,10 @@ def build_evidence_packet(
     warnings: list[str] = []
     missing = expected_record_ids - set(by_record)
     nonterminal = [result.record_id for result in relevant if result.status not in COVERED_STATUSES]
-    uncertain = [result.record_id for result in relevant if result.status == "uncertain"]
     if missing:
         warnings.append(f"Missing {len(missing)} record mappings")
     if nonterminal:
         warnings.append(f"{len(nonterminal)} record mappings failed technically")
-    if uncertain:
-        warnings.append(f"{len(uncertain)} record mappings are explicitly uncertain")
 
     evidence: list[EvidenceCandidate] = []
     seen: set[tuple[str, str, str]] = set()

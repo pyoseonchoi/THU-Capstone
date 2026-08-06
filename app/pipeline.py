@@ -246,6 +246,8 @@ class FullScanPipeline:
                         question_results,
                         expected_record_ids,
                     )
+                elif self._settings.finalize_deterministic_with_llm:
+                    result = await self._answerer.finalize_deterministic(plan, result)
                 answer = self._pipeline_answer(
                     plan,
                     result,

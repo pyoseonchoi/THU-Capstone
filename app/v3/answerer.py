@@ -15,17 +15,40 @@ logger = get_logger("v3.answerer")
 PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "v3_answer_system.txt"
 
 
+def _is_malformed_json(text: str) -> bool:
+    """Check if text looks like broken/incomplete JSON."""
+    text = text.strip()
+    if text.startswith(('{', '[')):
+        open_count = text.count('{') + text.count('[')
+        close_count = text.count('}') + text.count(']')
+        if open_count != close_count:
+            return True
+        try:
+            json.loads(text)
+            return False
+        except json.JSONDecodeError:
+            return True
+    return False
+
+
 def _parse_answer(raw: str) -> str:
     text = raw.strip()
     if "```" in text:
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text)
+
+    # Check for malformed JSON early
+    if _is_malformed_json(text):
+        return ""
+
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
             return text
+        if _is_malformed_json(match.group(0)):
+            return ""
         try:
             data = json.loads(match.group(0))
         except json.JSONDecodeError:
@@ -142,6 +165,82 @@ class V3Answerer:
             strategy=plan.strategy,
             warnings=warnings,
         )
+
+    async def finalize_deterministic(
+        self,
+        plan: V3QuestionPlan,
+        result: ExecutionResult,
+    ) -> ExecutionResult:
+        """Use the answer model only to polish a Python-computed result."""
+        evidence = [
+            {
+                "evidence_id": f"D{index:03d}",
+                "exact_quote": item[:900],
+            }
+            for index, item in enumerate(result.evidence[:10], start=1)
+            if item
+        ]
+        payload = {
+            "question_id": plan.question_id,
+            "question": plan.question,
+            "strategy": plan.strategy.value,
+            "python_computed_answer": result.answer,
+            "source_pages": result.source_pages,
+            "evidence": evidence,
+            "instruction": (
+                "Rewrite the Python-computed answer as a concise final answer. "
+                "Do not perform arithmetic, recount items, change numeric values, "
+                "change named entities, add unsupported facts, or omit required "
+                "parts. Return JSON with an 'answer' field only."
+            ),
+        }
+        try:
+            response = await self._router.chat(
+                [
+                    {"role": "system", "content": self._system_prompt},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                stage="answer",
+                temperature=0.0,
+                max_tokens=1200,
+                json_mode=True,
+                question_ids=[plan.question_id],
+            )
+            if response.usage:
+                self._tracker.record(response.usage)
+            answer = _parse_answer(response.content) or result.answer
+            if not answer:
+                return result.model_copy(
+                    update={
+                        "warnings": [
+                            *result.warnings,
+                            "LLM finalization rejected (malformed); retained Python answer.",
+                        ]
+                    }
+                )
+            return result.model_copy(
+                update={
+                    "answer": answer,
+                    "warnings": [
+                        *result.warnings,
+                        "Deterministic Python answer finalized by LLM.",
+                    ],
+                }
+            )
+        except Exception as exc:
+            logger.warning(
+                "Deterministic finalization failed for %s: %s",
+                plan.question_id,
+                exc,
+            )
+            return result.model_copy(
+                update={
+                    "warnings": [
+                        *result.warnings,
+                        "LLM finalization failed; retained deterministic Python answer.",
+                    ]
+                }
+            )
 
     async def _call(
         self,
