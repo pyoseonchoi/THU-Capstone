@@ -744,7 +744,10 @@ def _cycle_segments(
                 break
             opening.append(page)
         segments.append((start, end, _opening_title(opening, boilerplate)))
-    return segments
+    # Both corrections belong to segmentation, and their order matters: a card
+    # is claimed first, then the page that names the chapter it opens.
+    segments = _claim_orphan_fact_cards(pages, segments)
+    return _claim_opening_titles(pages, segments, boilerplate)
 
 
 def _claim_orphan_fact_cards(
@@ -787,6 +790,41 @@ def _claim_orphan_fact_cards(
             continue
         adjusted[index - 1] = (previous_start, candidate - 1, previous_title)
         adjusted[index] = (candidate, end, title)
+    return adjusted
+
+
+def _claim_opening_titles(
+    pages: list[DocumentPage],
+    segments: list[tuple[int, int, str]],
+    boilerplate: set[str],
+) -> list[tuple[int, int, str]]:
+    """Start a nameless chapter on the page that names it.
+
+    A chapter opens on a spread whose first page carries nothing but its
+    title, and where segmentation put the boundary after that page the chapter
+    is left with no name of its own while the page sits unread at the end of
+    the chapter before. Taking it back names the chapter, and the chapter it
+    came from does not want it: the page names something else.
+    """
+    by_number = {page.page_number: page for page in pages}
+    adjusted = list(segments)
+    for index in range(1, len(adjusted)):
+        start, end, title = adjusted[index]
+        if title:
+            continue
+        previous_start, previous_end, previous_title = adjusted[index - 1]
+        # Only a page that the chapter before can spare, and only the page
+        # immediately ahead of this one.
+        if previous_end != start - 1 or previous_end <= previous_start:
+            continue
+        page = by_number.get(previous_end)
+        if page is None:
+            continue
+        found = _opening_title([page], boilerplate)
+        if not found or found == previous_title:
+            continue
+        adjusted[index - 1] = (previous_start, previous_end - 1, previous_title)
+        adjusted[index] = (previous_end, end, found)
     return adjusted
 
 
@@ -1110,7 +1148,7 @@ def compile_document(
         # count without relying on any domain vocabulary.
         segments = _cycle_segments(pages)
         if segments:
-            segments = _claim_orphan_fact_cards(pages, segments)
+
             candidate = _cycle_records(pages, segments)
             candidate_trusted, candidate_titles = integrity(candidate, len(segments))
             if candidate and candidate_titles > unique_titles:

@@ -676,6 +676,12 @@ def _generic_claim_conflict(
 ) -> ExecutionResult | None:
     if plan.category != "contradiction" or not _registry_is_trusted(document):
         return None
+    # A question can contradict the document in more ways than one. Where the
+    # router named which, that verdict decides the executor: a question about
+    # units reported inconsistently is not a question about an overstated
+    # superlative, and answering it as one states a claim nobody made.
+    if not _shaped(plan, QuestionShape.CLAIM_CONFLICT) and not _phrasing_may_route(plan):
+        return None
     records = sorted(
         document.records,
         key=lambda record: (not _record_is_named(record, plan.question), record.ordinal),
@@ -692,7 +698,13 @@ def _generic_claim_conflict(
         claim_candidates = []
         for sentence in _sentences(record.text):
             folded_sentence = sentence.casefold()
-            if not any(term in folded_sentence for term in ("highest", "largest", "oldest")):
+            # The question asks about one kind of boast; a chapter that calls
+            # itself the oldest is not making the claim a question about size
+            # would contradict.
+            wanted = (requested_claim,) if requested_claim else (
+                "highest", "largest", "oldest",
+            )
+            if not any(term in folded_sentence for term in wanted):
                 continue
             claim_markers = (
                 "calls ",

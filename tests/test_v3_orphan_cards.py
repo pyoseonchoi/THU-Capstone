@@ -63,3 +63,46 @@ def test_the_number_of_chapters_never_changes():
     # Ranges stay contiguous and non-overlapping.
     for (_, end, _), (start, _, _) in zip(adjusted, adjusted[1:]):
         assert start == end + 1
+
+
+def test_a_nameless_chapter_takes_back_the_page_that_names_it():
+    """A chapter opening on a title page must not lose it to the chapter before."""
+    from app.v3.compiler import _claim_opening_titles
+
+    pages = [
+        DocumentPage(page_number=1, text="## First Chapter\n\nProse.\n"),
+        DocumentPage(page_number=2, text="More prose about the first.\n"),
+        DocumentPage(page_number=3, text="## Second Chapter\n"),
+        DocumentPage(page_number=4, text="Prose about the second.\n"),
+    ]
+    # Segmentation put the boundary after the page that names the second.
+    segments = [(1, 3, "First Chapter"), (4, 4, "")]
+
+    assert _claim_opening_titles(pages, segments, set()) == [
+        (1, 2, "First Chapter"),
+        (3, 4, "Second Chapter"),
+    ]
+
+
+def test_a_chapter_that_already_has_a_name_keeps_its_pages():
+    from app.v3.compiler import _claim_opening_titles
+
+    pages = [
+        DocumentPage(page_number=1, text="## First Chapter\n\nProse.\n"),
+        DocumentPage(page_number=2, text="## Second Chapter\n\nProse.\n"),
+    ]
+    segments = [(1, 1, "First Chapter"), (2, 2, "Second Chapter")]
+
+    assert _claim_opening_titles(pages, segments, set()) == segments
+
+
+def test_the_chapter_before_is_never_left_without_a_page():
+    from app.v3.compiler import _claim_opening_titles
+
+    pages = [
+        DocumentPage(page_number=1, text="## Only Page Of First\n"),
+        DocumentPage(page_number=2, text="Prose about the second.\n"),
+    ]
+    segments = [(1, 1, "Only Page Of First"), (2, 2, "")]
+
+    assert _claim_opening_titles(pages, segments, set()) == segments
