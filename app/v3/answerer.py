@@ -139,7 +139,30 @@ def _parse_answer(raw: str) -> str:
     return _strip_internal_id_tokens(answer).strip()
 
 
-def _evidence_score(item) -> tuple[int, float]:
+_TERM_STOPWORDS = {
+    "about", "across", "all", "also", "among", "and", "any", "are", "book",
+    "does", "each", "entries", "examples", "explain", "from", "guide",
+    "handle", "have", "identify", "into", "over", "overall", "profile",
+    "profiles", "that", "the", "their", "these", "this", "using", "what",
+    "when", "where", "which", "with",
+}
+
+
+def _question_terms(question: str) -> frozenset[str]:
+    """Extract the question's own content words, for scoring evidence by
+    relevance to *this specific question* rather than by generic narrative
+    signal words alone. Plain keyword overlap on the already-exhaustively-
+    gathered evidence -- not a similarity search over the source document,
+    so it re-ranks what was already read rather than deciding what to read.
+    """
+    return frozenset(
+        term
+        for term in re.findall(r"[a-z][a-z-]{3,}", question.casefold())
+        if term not in _TERM_STOPWORDS
+    )
+
+
+def _evidence_score(item, question_terms: frozenset[str] = frozenset()) -> tuple[int, int, float]:
     text = f"{item.claim} {item.exact_quote}".casefold()
     signals = (
         "increased",
@@ -153,7 +176,8 @@ def _evidence_score(item) -> tuple[int, float]:
         "but ",
         "since ",
     )
-    return sum(signal in text for signal in signals), item.confidence
+    relevance = sum(term in text for term in question_terms)
+    return relevance, sum(signal in text for signal in signals), item.confidence
 
 
 def _bounded_evidence(plan: V3QuestionPlan, packet: EvidencePacket):
@@ -163,8 +187,13 @@ def _bounded_evidence(plan: V3QuestionPlan, packet: EvidencePacket):
     limit = 80 if plan.category == "cross_section" else 36
     if len(items) <= limit:
         return items
+    terms = _question_terms(plan.question)
+
+    def score(item):
+        return _evidence_score(item, terms)
+
     if plan.category == "cross_section":
-        return sorted(items, key=_evidence_score, reverse=True)[:limit]
+        return sorted(items, key=score, reverse=True)[:limit]
 
     expected = max(packet.expected_records, 1)
     buckets: list[list] = [[], [], []]
@@ -176,7 +205,7 @@ def _bounded_evidence(plan: V3QuestionPlan, packet: EvidencePacket):
     selected = [
         item
         for bucket in buckets
-        for item in sorted(bucket, key=_evidence_score, reverse=True)[:per_bucket]
+        for item in sorted(bucket, key=score, reverse=True)[:per_bucket]
     ]
     return sorted(selected[:limit], key=lambda item: (item.record_ordinal, item.page))
 
