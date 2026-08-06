@@ -14,10 +14,105 @@ from app.v3.models import (
     QuestionShape,
     V3QuestionPlan,
 )
-from app.v3.question_compiler import _target_field
 
 # Function words carry no part of what a phrase names.
 _PHRASE_STOPWORDS = frozenset({"the", "and", "for", "its", "was", "with", "from"})
+_SUPERLATIVE_WORDS = (
+    "highest", "largest", "oldest", "tallest", "biggest", "smallest",
+    "deepest", "longest", "widest", "youngest", "newest", "first",
+)
+# A possessive right before a superlative names what it boasts about, in any
+# document: "Norway's largest", "Britain's second-highest", "the world's
+# largest". This is how the boast names its own scope without help from a
+# fixed list of place names.
+_POSSESSIVE_CLAIM_RE = re.compile(
+    r"\b([a-z][\w'-]*)'s\s+(?:\w+-)?(" + "|".join(_SUPERLATIVE_WORDS) + r")\b"
+)
+# A rate or a share is never what "largest" or "highest" means unless the
+# claim itself is about one; without that check a field like "highest
+# recorded wind speed" can outscore the field the claim is actually about
+# purely because both labels contain the word "highest".
+_RATE_UNIT_RE = re.compile(r"/|\bper\b|%")
+# Scope words with no boundary at all — "the world's largest" has nothing
+# narrower to compare against than the whole registry. A named region that is
+# not literally unbounded ("Britain", "Scandinavia") is not in this set: the
+# registry has no group that is known to be exactly that population.
+_UNIVERSAL_SCOPES = frozenset({
+    "world", "europe", "european", "earth", "planet", "global", "continent",
+})
+_NEGATION_WORDS = ("not ", "n't", "never ", "without ", "no longer", "one of ", "among ")
+
+
+_PARTITIVE_OBJECT_RE = re.compile(r"^\s*\w+\s+of\b")
+_PLURAL_OBJECT_RE = re.compile(r"^\s*(\w+s)\b")
+
+
+def _is_partitive_claim(sentence: str, span_end: int) -> bool:
+    """Whether the noun right after a superlative belongs to something else.
+
+    "The world's largest colony of seagulls" and "Europe's largest gull
+    colonies" both state the size of a feature the record merely contains,
+    not of the record itself: one names it with an explicit "of", the other
+    with a plain plural ("colonies", not "colony"). "Norway's largest
+    national park" and "Britain's second-highest peak" name neither — a
+    record boasts about itself in the singular, once, not about a population
+    of the things it holds.
+    """
+    tail = sentence[span_end : span_end + 30]
+    if _PARTITIVE_OBJECT_RE.match(tail):
+        return True
+    plural = _PLURAL_OBJECT_RE.match(tail)
+    return bool(plural) and plural.group(1) not in {"its", "this"}
+
+
+def _find_possessive_claim(text: str, requested_claim: str) -> re.Match | None:
+    """Return the possessive-superlative match this claim type is about.
+
+    A sentence can carry more than one boast — "Greece's first marine park
+    and Europe's largest protected area" — and taking whichever comes first
+    would read the wrong claim's scope onto the question actually asked.
+    Where the question names which superlative it means, only a match on
+    that word is considered.
+    """
+    matches = list(_POSSESSIVE_CLAIM_RE.finditer(text))
+    if not requested_claim:
+        return matches[0] if matches else None
+    # Once the question names its superlative, only a match on that same
+    # word counts — falling back to a different one here is how "Scotland's
+    # oldest national park" answered a question about the largest, and how
+    # "Scotland's largest city" (a claim about a city, not the park) did too.
+    return next((match for match in matches if match.group(2) == requested_claim), None)
+
+
+def _claim_names_the_entity(sentence: str, span_end: int, entity_label: str) -> bool:
+    """Whether a bare possessive superlative, with no other marker, names the
+    record's own kind of subject rather than something it merely contains.
+
+    Without an explicit "calls"/"described as" marker elsewhere in the
+    sentence, a possessive superlative on its own is trusted only when its
+    object is the kind of thing the registry actually catalogues — a park, a
+    station, whatever entity_label names — since a marker-free superlative
+    about anything else (a colony, a wind speed, a waterfall) describes a
+    feature the record contains at least as often as it boasts about the
+    record itself.
+    """
+    if not entity_label:
+        return True
+    return entity_label.casefold() in sentence[span_end : span_end + 40]
+
+
+def _is_negated(sentence: str) -> bool:
+    """Whether a sentence hedges or denies the superlative it contains.
+
+    "Europe's largest parks" inside "may not be one of Europe's largest
+    parks" states the opposite of a claim, and "one of Europe's largest"
+    does not claim first place at all — either way a substring match alone
+    cannot tell a real boast from this, and answering as though the record
+    claimed what it only hedged or denied invents a contradiction where the
+    text states none.
+    """
+    folded = sentence.casefold()
+    return any(word in folded for word in _NEGATION_WORDS)
 
 
 def _facts(document: CompiledDocument, field: str) -> list[tuple[CompiledRecord, NumberFact]]:
@@ -661,13 +756,71 @@ def _designation_argmax_answer(
 
 
 def _record_is_named(record: CompiledRecord, question: str) -> bool:
-    folded = question.casefold()
+    """Whether the question already names this record, even by a shorter form.
+
+    A question may use a name shorter than the record's own title — "Snowdon"
+    for "Snowdonia National Park" — so a prefix match in either direction
+    catches that without knowing anything about what the name refers to.
+    """
     title_words = [
         word
         for word in re.findall(r"[a-z0-9]+", record.title.casefold())
         if len(word) >= 4
     ]
-    return bool(title_words and title_words[0] in folded)
+    if not title_words:
+        return False
+    stem = title_words[0]
+    return any(
+        stem.startswith(word) or word.startswith(stem)
+        for word in re.findall(r"[a-z0-9]+", question.casefold())
+        if len(word) >= 4
+    )
+
+
+def _claim_field(record: CompiledRecord, claim: str) -> str:
+    """Pick which of a record's own fields a claim's superlative measures.
+
+    This only runs once the question's own routing gave no field. Matching is
+    scoped to the fields this one record reports — not the whole document's
+    catalog, which invites an unrelated field to win on a shared word merely
+    because it exists somewhere else in the book — and a field whose unit is
+    a rate or a share is set aside unless the claim itself is about a rate: a
+    "highest" label just as easily belongs to an unrelated field such as a
+    top wind speed as it does to an elevation, and only the unit tells them
+    apart.
+    """
+    if not record.number_facts:
+        return ""
+    claim_folded = claim.casefold()
+    claim_terms = set(re.findall(r"[a-z0-9]+", claim_folded))
+    mentions_rate = bool(re.search(r"speed|\brate\b|percent|\bper\b|%", claim_folded))
+    scored: list[tuple[int, str]] = []
+    for fact in record.number_facts:
+        terms = set(fact.field.split("_")) - {"2023", "year"}
+        overlap = len(terms & claim_terms)
+        if not overlap:
+            continue
+        penalty = 2 if not mentions_rate and _RATE_UNIT_RE.search(fact.unit or "") else 0
+        scored.append((overlap - penalty, fact.field))
+    if not scored:
+        return ""
+    return max(scored, key=lambda item: item[0])[1]
+
+
+def _claim_scope_group(plan: V3QuestionPlan, claim: str, requested_claim: str) -> str:
+    """Return the group a claim's boast is scoped to, when that is knowable.
+
+    The router reads the whole question and may already say what population
+    the claim ranks within; that is the more reliable source and wins when
+    given. Failing that, the noun right before the matching superlative in
+    the claim itself usually names it — "Norway's largest", "Britain's
+    second-highest" — read the same way whatever the document is about.
+    """
+    scope = (plan.shape_plan.claim_scope or "").strip()
+    if scope:
+        return scope.casefold()
+    match = _find_possessive_claim(claim.casefold(), requested_claim)
+    return match.group(1) if match else ""
 
 
 def _generic_claim_conflict(
@@ -706,6 +859,8 @@ def _generic_claim_conflict(
             )
             if not any(term in folded_sentence for term in wanted):
                 continue
+            if _is_negated(folded_sentence):
+                continue
             claim_markers = (
                 "calls ",
                 "called ",
@@ -726,23 +881,50 @@ def _generic_claim_conflict(
                 )
             ) and not any(marker in folded_sentence for marker in claim_markers):
                 continue
-            score = sum(
-                marker in folded_sentence
-                for marker in claim_markers
+            has_marker = any(marker in folded_sentence for marker in claim_markers)
+            # A possessive right before the superlative is itself an
+            # assertion — "Norway's largest" — even with none of the marker
+            # phrases above, unless the noun after it belongs to something
+            # the record merely contains rather than to the record itself.
+            possessive = _find_possessive_claim(folded_sentence, requested_claim)
+            has_possessive_claim = bool(possessive) and not _is_partitive_claim(
+                folded_sentence, possessive.end()
             )
+            # A marker phrase is already a direct assertion and needs no
+            # further check; a bare possessive, with nothing else vouching
+            # for it, only counts when its object is the kind of thing this
+            # registry catalogues.
+            if has_possessive_claim and not has_marker:
+                has_possessive_claim = _claim_names_the_entity(
+                    folded_sentence, possessive.end(), document.entity_label
+                )
+            if not has_marker and not has_possessive_claim:
+                # Nothing here actually asserts anything; a coincidental
+                # mention of the record's own name proves nothing on its own.
+                continue
+            score = sum(marker in folded_sentence for marker in claim_markers)
+            if has_possessive_claim:
+                score += 2
+            # The record naming itself only strengthens a claim already
+            # found by one of the checks above — a bare mention elsewhere in
+            # the sentence, with neither, is not evidence of anything.
             if record.title.split()[0].casefold() in folded_sentence:
                 score += 2
             claim_candidates.append((score, sentence))
-        claim = max(claim_candidates, default=(0, ""), key=lambda item: item[0])[1]
-        if not claim or not record.country:
+        best_score, claim = max(claim_candidates, default=(0, ""), key=lambda item: item[0])
+        # A sentence that merely contains "highest" is not a claim about this
+        # record — a park's chapter can describe "the highest points of the
+        # [mountain range]" without saying anything about itself. Only a
+        # sentence that scored on an actual assertion marker is one.
+        if best_score <= 0 or not claim or not record.country:
             continue
         folded_claim = claim.casefold()
         if requested_claim and requested_claim not in folded_claim:
             continue
         # The measurement is whichever the question was bound to; when the
         # question names none, the claim itself says what it boasts about, so
-        # match its wording against the document's own fields.
-        field = plan.target_fields[0] if plan.target_fields else _target_field(claim, document)
+        # match its wording against this record's own fields.
+        field = plan.target_fields[0] if plan.target_fields else _claim_field(record, claim)
         comparison = (
             "earlier"
             if any(
@@ -756,10 +938,26 @@ def _generic_claim_conflict(
         own = next((fact for fact in record.number_facts if fact.field == field), None)
         if own is None:
             continue
+        # The claim's own scope decides which records it can be checked
+        # against. A boast with no stated scope, or one that names this
+        # record's own group, keeps the narrow, safe comparison. A boast
+        # scoped to everything ("the world's") has no group here narrower
+        # than the whole registry, so comparison widens to match. A boast
+        # scoped to something else this registry does not model as a group
+        # of its own — "Britain's", spanning several of the countries records
+        # are filed under — cannot be checked against any group known to be
+        # exactly that population, and guessing narrow or wide both risk
+        # comparing against the wrong set, so the claim is left unresolved.
+        scope_group = _claim_scope_group(plan, claim, requested_claim)
+        own_group = record.country.casefold()
+        if scope_group and scope_group not in _UNIVERSAL_SCOPES and scope_group != own_group:
+            continue
+        narrow = not scope_group or scope_group == own_group
         peers = [
             (other, fact)
             for other, fact in _facts(document, field)
-            if other.record_id != record.record_id and other.country == record.country
+            if other.record_id != record.record_id
+            and (not narrow or other.country == record.country)
         ]
         explicit_comparison: tuple[CompiledRecord, NumberFact, str] | None = None
         record_name = record.title.split()[0].casefold()
@@ -811,7 +1009,10 @@ def _generic_claim_conflict(
             answer=(
                 f"Claim: {claim} The compiled figures give {record.title} as "
                 f"{own.raw_value}{f' {own.unit}' if own.unit else ''}. "
-                f"Counterevidence: {other.title}, also in {record.country}, is reported as "
+                # The counter-record's own country, not the claimant's — a
+                # widened comparison can cross into a different one.
+                f"Counterevidence: {other.title}"
+                f"{f', in {other.country},' if other.country else ''} is reported as "
                 f"{counter.raw_value}{f' {counter.unit}' if counter.unit else ''}. "
                 "These figures contradict the stated rank."
             ),
@@ -1321,7 +1522,7 @@ def _largest_claim_conflict(
     for record in document.records:
         claim = _sentence_with(record.text, f"largest {entity}")
         area = next((fact for fact in record.number_facts if fact.field == field), None)
-        if not claim or not area or not record.country:
+        if not claim or _is_negated(claim) or not area or not record.country:
             continue
         peers = [
             (other, fact)
@@ -1355,13 +1556,18 @@ def execute_structured(
         _table_answer,
         _contents_answer,
         _catalog_answer,
+        # A contradiction can be checked in more than one way — a value in
+        # the wrong unit, a "largest in its country" boast, or any other
+        # claim a record's own figures disagree with. The narrowest, most
+        # exact check goes first; the generic one only gets a question none
+        # of the specific checks resolved.
+        _unit_outlier,
+        _largest_claim_conflict,
         _generic_claim_conflict,
         _dated_first_comparison,
         _generic_cross_border_relations,
         _generic_needle_answer,
         _composed_fact_answer,
-        _unit_outlier,
-        _largest_claim_conflict,
     ):
         result = executor(plan, document)
         if result is not None and result.complete:
