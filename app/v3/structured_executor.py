@@ -154,6 +154,7 @@ def _cross_border_answer(
         question_id=plan.question_id,
         answer=answer,
         evidence=evidence,
+        evidence_pages=pages,
         source_pages=sorted(set(pages)),
         complete=True,
         strategy=plan.strategy,
@@ -198,17 +199,17 @@ def _threat_absence_answer(
         "was embroiled in the 1990s conflict and placed on the World Heritage in "
         "Danger list because of the risk of mines."
     )
+    threat_pages = [
+        _page_with(jostedalsbreen, "global warming", "shrink markedly"),
+        _page_with(cinque_terre, "tourists began to trickle", "become a flood"),
+        _page_with(plitvice, "embroiled in the 1990s conflict"),
+    ]
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
         evidence=[glacier_quote, visitor_quote, wartime_quote],
-        source_pages=sorted(
-            {
-                _page_with(jostedalsbreen, "global warming", "shrink markedly"),
-                _page_with(cinque_terre, "tourists began to trickle", "become a flood"),
-                _page_with(plitvice, "embroiled in the 1990s conflict"),
-            }
-        ),
+        evidence_pages=threat_pages,
+        source_pages=sorted(set(threat_pages)),
         complete=True,
         strategy=plan.strategy,
     )
@@ -251,17 +252,17 @@ def _designation_absence_answer(
         "biosphere reserve status also appears, for example at Retezat, and the "
         "Slovenský Raj entry explicitly mentions 11 national nature reserves."
     )
+    designation_pages = [
+        _page_with(world_heritage, "world heritage list since 1980"),
+        _page_with(biosphere, "unesco biosphere reserve status arrived"),
+        _page_with(nature_reserves, "national nature reserves"),
+    ]
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
         evidence=[world_quote, biosphere_quote, reserve_quote],
-        source_pages=sorted(
-            {
-                _page_with(world_heritage, "world heritage list since 1980"),
-                _page_with(biosphere, "unesco biosphere reserve status arrived"),
-                _page_with(nature_reserves, "national nature reserves"),
-            }
-        ),
+        evidence_pages=designation_pages,
+        source_pages=sorted(set(designation_pages)),
         complete=True,
         strategy=plan.strategy,
     )
@@ -304,6 +305,7 @@ def _human_wilderness_answer(
         question_id=plan.question_id,
         answer=answer,
         evidence=[abisko_quote, hutsul_quote, terrace_quote],
+        evidence_pages=pages,
         source_pages=sorted(set(pages)),
         complete=True,
         strategy=plan.strategy,
@@ -353,6 +355,7 @@ def _glaciation_synthesis_answer(
         question_id=plan.question_id,
         answer=answer,
         evidence=evidence,
+        evidence_pages=pages,
         source_pages=sorted(set(pages)),
         complete=True,
         strategy=plan.strategy,
@@ -394,18 +397,18 @@ def _species_recovery_answer(
         "parks as conservation successes while acknowledging how close the species came "
         "to being lost."
     )
+    recovery_pages = [
+        _page_with(abruzzo, "almost died out", "over 2000"),
+        _page_with(donana, "iberian lynx", "world's most endangered"),
+        _page_with(saxon, "salmon populations", "bounced back"),
+        lynx_fact.page,
+    ]
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
         evidence=[chamois_quote, lynx_quote, salmon_quote, lynx_fact.quote],
-        source_pages=sorted(
-            {
-                _page_with(abruzzo, "almost died out", "over 2000"),
-                _page_with(donana, "iberian lynx", "world's most endangered"),
-                lynx_fact.page,
-                _page_with(saxon, "salmon populations", "bounced back"),
-            }
-        ),
+        evidence_pages=recovery_pages,
+        source_pages=sorted(set(recovery_pages)),
         complete=True,
         strategy=plan.strategy,
     )
@@ -452,20 +455,20 @@ def _unesco_status_answer(
         "Tatras are described as Unesco biosphere reserves, which is a different "
         "designation and not World Heritage inscription."
     )
+    unesco_pages = [
+        _page_with(durmitor, "world heritage list since 1980"),
+        _page_with(plitvice, "world heritage list in 1979"),
+        tentative_fact.page,
+        _page_with(skadar, "formally nominated", "late 2011"),
+        _page_with(retezat, "biosphere reserve status arrived"),
+        _page_with(tatras, "forming a unesco biosphere reserve"),
+    ]
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
         evidence=evidence,
-        source_pages=sorted(
-            {
-                _page_with(durmitor, "world heritage list since 1980"),
-                _page_with(plitvice, "world heritage list in 1979"),
-                tentative_fact.page,
-                _page_with(skadar, "formally nominated", "late 2011"),
-                _page_with(retezat, "biosphere reserve status arrived"),
-                _page_with(tatras, "forming a unesco biosphere reserve"),
-            }
-        ),
+        evidence_pages=unesco_pages,
+        source_pages=sorted(set(unesco_pages)),
         complete=True,
         strategy=plan.strategy,
     )
@@ -505,17 +508,17 @@ def _climbing_firsts_answer(
         "Bailey Williams and William Bingley on Clogwyn Du'r Arddu in Snowdonia in "
         "1798."
     )
+    climbing_pages = [
+        _page_with(ecrins, "barre des écrins", "25 june 1864"),
+        _page_with(snowdonia, "peter bailey williams", "1798"),
+        _page_with(snowdonia, "clogwyn du'r arddu"),
+    ]
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
         evidence=[summit_quote, climb_quote, location_quote],
-        source_pages=sorted(
-            {
-                _page_with(ecrins, "barre des écrins", "25 june 1864"),
-                _page_with(snowdonia, "peter bailey williams", "1798"),
-                _page_with(snowdonia, "clogwyn du'r arddu"),
-            }
-        ),
+        evidence_pages=climbing_pages,
+        source_pages=sorted(set(climbing_pages)),
         complete=True,
         strategy=plan.strategy,
     )
@@ -586,6 +589,7 @@ def _threshold_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Execu
             f"{len(selected)} parks report a highest point of at least {threshold:g}m: {details}."
         ),
         evidence=[_fact_evidence(record, fact) for record, fact in selected],
+        evidence_pages=[fact.page for _, fact in selected],
         source_pages=[fact.page for _, fact in selected],
         complete=bool(selected),
         strategy=plan.strategy,
@@ -606,6 +610,7 @@ def _superlative_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Exe
                 f"{fact.unit} in {record.country}."
             ),
             evidence=[_fact_evidence(record, fact)],
+            evidence_pages=[fact.page],
             source_pages=[fact.page],
             complete=True,
             strategy=plan.strategy,
@@ -622,6 +627,7 @@ def _superlative_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Exe
                 f"The highest is {fact.subject} at {fact.value:g}m in {record.title}{location}."
             ),
             evidence=[_fact_evidence(record, fact)],
+            evidence_pages=[fact.page],
             source_pages=[fact.page],
             complete=bool(fact.subject),
             strategy=plan.strategy,
@@ -649,6 +655,7 @@ def _superlative_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Exe
                 f"{_format_number(fact.value)} per year.{comparison}"
             ),
             evidence=[_fact_evidence(other, other_fact) for other, other_fact in ordered[:3]],
+            evidence_pages=[other_fact.page for _, other_fact in ordered[:3]],
             source_pages=[other_fact.page for _, other_fact in ordered[:3]],
             complete=True,
             strategy=plan.strategy,
@@ -677,6 +684,7 @@ def _needle_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Executio
                 f"{match.group(2)}."
             ),
             evidence=[quote],
+            evidence_pages=[_page_with(record, "starting as", "icehotel")],
             source_pages=[_page_with(record, "starting as", "icehotel")],
             complete=True,
             strategy=plan.strategy,
@@ -693,6 +701,7 @@ def _needle_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Executio
                 f"{fact.value:g} years old, in {record.title}, {record.country}."
             ),
             evidence=[_fact_evidence(record, fact)],
+            evidence_pages=[fact.page],
             source_pages=[fact.page],
             complete=bool(fact.subject and record.country),
             strategy=plan.strategy,
@@ -707,6 +716,7 @@ def _needle_answer(plan: V3QuestionPlan, document: CompiledDocument) -> Executio
             question_id=plan.question_id,
             answer=f"Etna's first recorded eruption is dated to {year}.",
             evidence=[_fact_evidence(record, fact)],
+            evidence_pages=[fact.page],
             source_pages=[fact.page],
             complete=True,
             strategy=plan.strategy,
@@ -735,6 +745,7 @@ def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> Execution
             f"the other park cards use {common}."
         ),
         evidence=[_fact_evidence(record, fact)],
+        evidence_pages=[fact.page],
         source_pages=[fact.page],
         complete=True,
         strategy=plan.strategy,
@@ -769,6 +780,7 @@ def _largest_claim_conflict(
                 f"at {other_area.raw_value} {other_area.unit}, which is larger."
             ),
             evidence=[claim, _fact_evidence(record, area), _fact_evidence(other, other_area)],
+            evidence_pages=[area.page, area.page, other_area.page],
             source_pages=sorted({area.page, other_area.page}),
             complete=True,
             strategy=plan.strategy,
@@ -804,6 +816,7 @@ def _rank_conflict(plan: V3QuestionPlan, document: CompiledDocument) -> Executio
             "park contains five of Britain's six highest summits, so Snowdon cannot be second."
         ),
         evidence=[snowdon_claim, broader_claim, _fact_evidence(cairngorms, ben)],
+        evidence_pages=[snowdonia.page_start, ben.page, ben.page],
         source_pages=sorted({ben.page, snowdonia.page_start}),
         complete=True,
         strategy=plan.strategy,

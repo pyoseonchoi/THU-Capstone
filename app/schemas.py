@@ -494,11 +494,19 @@ class UsageRecord(BaseModel):
 # Pipeline output models
 # ---------------------------------------------------------------------------
 
+class EvidenceQuote(BaseModel):
+    """A single source-literal quote backing an answer, with its page if known."""
+    quote: str
+    page: Optional[int] = None
+
+
 class PipelineAnswer(BaseModel):
     """Final answer for one question."""
     question_id: str
     final_answer: str = ""
     answer_with_evidence: str = ""
+    evidence_quotes: list["EvidenceQuote"] = Field(default_factory=list)
+    source_pages: list[int] = Field(default_factory=list)
     operator: Optional[Operator] = None
     plan: Optional[QueryPlan] = None
     operation_result: Optional[OperationResult] = None

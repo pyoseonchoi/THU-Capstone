@@ -7,6 +7,7 @@ questions, then reduce and synthesize from validated evidence.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from app.schemas import (
     CoverageReport,
     DocumentChunk,
     DocumentMetadata,
+    EvidenceQuote,
     OperationResult,
     Operator,
     PipelineAnswer,
@@ -58,6 +60,17 @@ from app.v3.structured_executor import execute_structured
 
 logger = get_logger("pipeline.v3")
 ProgressCallback = Callable[[str, int, int, int], None]
+
+_PAGE_IN_QUOTE_RE = re.compile(r"\(page\s+(\d+)\)", re.IGNORECASE)
+
+
+def _page_from_quote_text(quote: str) -> int | None:
+    """Recover a page number some evidence strings embed inline (e.g. the
+    hardcoded structured-answer helpers), for callers that only get a
+    per-question source_pages list rather than a page aligned to each quote.
+    """
+    match = _PAGE_IN_QUOTE_RE.search(quote)
+    return int(match.group(1)) if match else None
 
 
 class FullScanPipeline:
@@ -315,11 +328,27 @@ class FullScanPipeline:
         evidence_note = (
             "Validated source pages/segments: " + ", ".join(map(str, pages)) if pages else ""
         )
+        # evidence_pages is index-aligned with evidence only along the V3
+        # generic path (answerer.py / reducers.py); older hardcoded answer
+        # helpers don't populate it, so fall back to an unpaired page.
+        paired_pages = (
+            result.evidence_pages
+            if len(result.evidence_pages) == len(result.evidence)
+            else [None] * len(result.evidence)
+        )
+        seen_quotes: set[str] = set()
+        quotes: list[EvidenceQuote] = []
+        for quote, page in zip(result.evidence, paired_pages):
+            if quote and quote not in seen_quotes:
+                seen_quotes.add(quote)
+                quotes.append(EvidenceQuote(quote=quote, page=page or _page_from_quote_text(quote)))
         final_answer = result.answer.strip() or "Error: grounded answer unavailable"
         return PipelineAnswer(
             question_id=plan.question_id,
             final_answer=final_answer,
             answer_with_evidence=evidence_note,
+            evidence_quotes=quotes,
+            source_pages=pages,
             operator=operator,
             operation_result=OperationResult(
                 question_id=plan.question_id,
