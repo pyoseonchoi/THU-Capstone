@@ -359,7 +359,7 @@ class V3Answerer:
             except Exception as exc:
                 logger.warning("V3 thesis verification failed for %s: %s", plan.question_id, exc)
                 warnings.append("Thesis-verification pass failed; retained the unverified draft")
-        if plan.category == "cross_section" and answer and not used_fallback:
+        if plan.category in ("cross_section", "absence") and answer and not used_fallback:
             try:
                 response = await self._call(
                     plan,
