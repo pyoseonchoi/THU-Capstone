@@ -85,7 +85,12 @@ def _target_field(
         scored: list[tuple[int, str]] = []
         question_terms = set(re.findall(r"[a-z0-9]+", folded))
         for field in document.field_catalog:
-            terms = set(field.casefold().split("_")) - {"2023", "year"}
+            # An edition year in a field name is not what it measures.
+            terms = {
+                term
+                for term in field.casefold().split("_")
+                if term and term != "year" and not term.isdigit()
+            }
             overlap = len(terms & question_terms)
             if overlap:
                 scored.append((overlap, field))

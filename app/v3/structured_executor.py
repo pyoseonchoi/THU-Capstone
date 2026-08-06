@@ -38,7 +38,7 @@ _RATE_UNIT_RE = re.compile(r"/|\bper\b|%")
 # not literally unbounded ("Britain", "Scandinavia") is not in this set: the
 # registry has no group that is known to be exactly that population.
 _UNIVERSAL_SCOPES = frozenset({
-    "world", "europe", "european", "earth", "planet", "global", "continent",
+    "world", "earth", "planet", "globe", "global", "universe",
 })
 _NEGATION_WORDS = ("not ", "n't", "never ", "without ", "no longer", "one of ", "among ")
 
@@ -777,6 +777,21 @@ def _record_is_named(record: CompiledRecord, question: str) -> bool:
     )
 
 
+def _measured_field_terms(field: str) -> set[str]:
+    """Return the words of a field name that say what it measures.
+
+    A field carries the edition it was published in — "hdi 2023", "population
+    2019" — and matching on that number, or on the word "year" itself, would
+    pair a question with whichever field happened to share an edition rather
+    than a subject.
+    """
+    return {
+        term
+        for term in field.casefold().split("_")
+        if term and term != "year" and not term.isdigit()
+    }
+
+
 def _claim_field(record: CompiledRecord, claim: str) -> str:
     """Pick which of a record's own fields a claim's superlative measures.
 
@@ -796,7 +811,7 @@ def _claim_field(record: CompiledRecord, claim: str) -> str:
     mentions_rate = bool(re.search(r"speed|\brate\b|percent|\bper\b|%", claim_folded))
     scored: list[tuple[int, str]] = []
     for fact in record.number_facts:
-        terms = set(fact.field.split("_")) - {"2023", "year"}
+        terms = _measured_field_terms(fact.field)
         overlap = len(terms & claim_terms)
         if not overlap:
             continue
@@ -1541,7 +1556,12 @@ def _largest_claim_conflict(
     field = plan.target_fields[0] if plan.target_fields else ""
     if not field:
         return None
-    entity = document.entity_label or "national park"
+    # This check reads the document's own boast — "the largest <entity>" — so
+    # it needs the word the registry calls its records. Guessing one would
+    # search for a phrase this document never uses.
+    entity = document.entity_label
+    if not entity:
+        return None
     for record in document.records:
         claim = _sentence_with(record.text, f"largest {entity}")
         area = next((fact for fact in record.number_facts if fact.field == field), None)
