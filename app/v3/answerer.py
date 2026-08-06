@@ -65,6 +65,60 @@ def _strip_internal_id_tokens(text: str) -> str:
     return _EMPTY_PARENS_RE.sub("", stripped)
 
 
+_CITATION_IDENTIFIER_RE = re.compile(
+    r"\b(?:Figure|Table|Box|Spotlight)\s+[A-Za-z]?\.?\d+(?:\.[A-Za-z0-9]+)*",
+    re.IGNORECASE,
+)
+_PARENTHETICAL_RE = re.compile(r"\([^()]*\)")
+
+
+def _normalize_citation(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _verified_citations(evidence: list[dict]) -> set[str]:
+    """Collect every Figure/Table/Box/Spotlight identifier actually present
+    in the evidence handed to the model, so a cited number can be checked
+    against what was really extracted rather than trusted at face value.
+    """
+    verified: set[str] = set()
+    for item in evidence:
+        haystack = " ".join(
+            str(item.get(key, "")) for key in ("claim", "exact_quote", "field", "entity")
+        )
+        for match in _CITATION_IDENTIFIER_RE.finditer(haystack):
+            verified.add(_normalize_citation(match.group(0)))
+    return verified
+
+
+def _drop_unverified_citations(answer: str, verified: set[str]) -> str:
+    """Remove a parenthetical aside that cites a Figure/Table/Box/Spotlight
+    number never seen in the evidence -- the model sometimes echoes a
+    plausible-looking but wrong or merely nearby number (e.g. citing
+    "Figure O.8" when the evidence was drawn from Figure 1.8). Only touches
+    parentheses that specifically make such a citation claim; an ordinary
+    parenthetical aside (a quote, a qualifier) is left untouched. Skipped
+    entirely when nothing in the evidence names a Figure/Table/Box/Spotlight
+    at all, since an empty verified set carries no signal to judge by.
+    """
+    if not verified:
+        return answer
+
+    def replace(match: re.Match) -> str:
+        content = match.group(0)
+        identifiers = _CITATION_IDENTIFIER_RE.findall(content)
+        if not identifiers:
+            return content
+        if any(_normalize_citation(ident) in verified for ident in identifiers):
+            return content
+        return ""
+
+    cleaned = _PARENTHETICAL_RE.sub(replace, answer)
+    cleaned = _EMPTY_PARENS_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s+([.,;:!?])", r"\1", cleaned)
+    return re.sub(r"\s{2,}", " ", cleaned)
+
+
 def _parse_answer(raw: str) -> str:
     text = raw.strip()
     if "```" in text:
@@ -216,6 +270,31 @@ def _fallback_answer(plan: V3QuestionPlan, packet: EvidencePacket) -> str:
     return " ".join(claims[:10])
 
 
+_THESIS_CHECK_INSTRUCTION = (
+    "Check your draft's central thesis against the evidence above, item by item: "
+    "does each piece of evidence support the stated thesis, contradict it, or say "
+    "something different? If most of the evidence contradicts the thesis or points "
+    "in a different direction than what the draft claims, rewrite only the thesis "
+    "sentence(s) to match what the evidence collectively shows. Do not shorten the "
+    "answer or drop any named example, date, or quantity already in the draft -- "
+    "keep every one of them, and only adjust the framing that connects them. If "
+    "the thesis is already well-supported by most of the evidence, return the "
+    "draft completely unchanged."
+)
+
+_COMPLETENESS_CHECK_INSTRUCTION = (
+    "Check your draft against the evidence above for completeness: does the "
+    "evidence contain any distinct matching case, entity, figure/table citation, "
+    "or example that the draft left out? If the question implies an exhaustive "
+    "list or an open count (e.g. \"which parks...\", \"what evidence shows...\"), "
+    "add every distinct case the evidence supports rather than a partial sample, "
+    "and never answer that evidence is insufficient when the evidence above "
+    "actually contains a usable answer. Do not remove or reword anything already "
+    "correct in the draft -- only add what is missing. If the draft is already "
+    "complete, return it completely unchanged."
+)
+
+
 class V3Answerer:
     """Generate a grounded answer and refine only objectively missing slots."""
 
@@ -265,8 +344,40 @@ class V3Answerer:
             except Exception as exc:
                 logger.warning("V3 answer refinement failed for %s: %s", plan.question_id, exc)
                 warnings.append("Answer refinement failed; retained the grounded draft")
+        if plan.category == "global_synthesis" and answer and not used_fallback:
+            try:
+                response = await self._call(
+                    plan,
+                    evidence,
+                    structure=structure,
+                    draft=answer,
+                    refine_instruction=_THESIS_CHECK_INSTRUCTION,
+                )
+                verified = _parse_answer(response)
+                if verified:
+                    answer = verified
+            except Exception as exc:
+                logger.warning("V3 thesis verification failed for %s: %s", plan.question_id, exc)
+                warnings.append("Thesis-verification pass failed; retained the unverified draft")
+        if plan.category == "cross_section" and answer and not used_fallback:
+            try:
+                response = await self._call(
+                    plan,
+                    evidence,
+                    structure=structure,
+                    draft=answer,
+                    refine_instruction=_COMPLETENESS_CHECK_INSTRUCTION,
+                )
+                completed = _parse_answer(response)
+                if completed:
+                    answer = completed
+            except Exception as exc:
+                logger.warning("V3 completeness check failed for %s: %s", plan.question_id, exc)
+                warnings.append("Completeness-check pass failed; retained the unverified draft")
         if not answer:
             answer = _fallback_answer(plan, packet)
+        elif not used_fallback:
+            answer = _drop_unverified_citations(answer, _verified_citations(evidence))
         return ExecutionResult(
             question_id=plan.question_id,
             answer=answer,
@@ -285,6 +396,7 @@ class V3Answerer:
         structure: list[str] | None = None,
         draft: str = "",
         missing: list[str] | None = None,
+        refine_instruction: str | None = None,
     ) -> str:
         payload = {
             "question_id": plan.question_id,
@@ -298,7 +410,7 @@ class V3Answerer:
             payload["document_structure"] = structure
         if draft:
             payload["draft_answer"] = draft
-            payload["refine_instruction"] = (
+            payload["refine_instruction"] = refine_instruction or (
                 "Correct only the missing requested parts using the same evidence: "
                 + ", ".join(missing or [])
             )
