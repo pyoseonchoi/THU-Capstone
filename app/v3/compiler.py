@@ -70,6 +70,8 @@ _ORDINAL_BANNER_RE = re.compile(r"^\d{1,3}\s+[A-Z][A-Z\s'\-]*$")
 _LIST_ENTRY_RE = re.compile(r"^0\d\s+\S")
 # A heading repeated at least this often is per-record furniture, not a title.
 _BOILERPLATE_MIN_REPEATS = 3
+# How far ahead of a chapter's opening page its fact card may be printed.
+_ORPHAN_CARD_REACH = 3
 
 _COUNTRY_ALIASES = {
     "Albania": ("albania", "albanian"),
@@ -696,6 +698,49 @@ def _cycle_segments(
     return segments
 
 
+def _claim_orphan_fact_cards(
+    pages: list[DocumentPage],
+    segments: list[tuple[int, int, str]],
+) -> list[tuple[int, int, str]]:
+    """Give a fact card that no chapter reads to the chapter it introduces.
+
+    A publication may print a chapter's card on the spread facing its opening
+    page. The card then falls at the end of the previous chapter's range,
+    where nothing reads it because that chapter already has one, and the
+    chapter it describes is left with none. Moving the boundary back to the
+    card puts each card with the chapter whose figures it states, without
+    changing how many chapters there are.
+    """
+    marked = {page.page_number for page in pages if _fact_marker(page.text)}
+    adjusted = list(segments)
+    for index in range(1, len(adjusted)):
+        start, end, title = adjusted[index]
+        if any(number in marked for number in range(start, end + 1)):
+            continue
+        previous_start, previous_end, previous_title = adjusted[index - 1]
+        cards = [
+            number
+            for number in range(previous_start, previous_end + 1)
+            if number in marked
+        ]
+        # The first card in a range is the one that chapter reads. Only a
+        # later one is spare, and only if it sits within reach of the opening
+        # page it faces.
+        candidate = next(
+            (
+                number
+                for number in reversed(cards[1:])
+                if 0 < start - number <= _ORPHAN_CARD_REACH
+            ),
+            None,
+        )
+        if candidate is None:
+            continue
+        adjusted[index - 1] = (previous_start, candidate - 1, previous_title)
+        adjusted[index] = (candidate, end, title)
+    return adjusted
+
+
 def _cycle_records(
     pages: list[DocumentPage],
     segments: list[tuple[int, int, str]],
@@ -1015,6 +1060,7 @@ def compile_document(
         # count without relying on any domain vocabulary.
         segments = _cycle_segments(pages)
         if segments:
+            segments = _claim_orphan_fact_cards(pages, segments)
             candidate = _cycle_records(pages, segments)
             candidate_trusted, candidate_titles = integrity(candidate, len(segments))
             if candidate and candidate_titles > unique_titles:
