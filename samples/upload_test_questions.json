@@ -1,0 +1,14 @@
+{
+  "questions": [
+    {
+      "id": "q01",
+      "category": "workflow",
+      "question": "What three workflow stages are mentioned in the document?"
+    },
+    {
+      "id": "q02",
+      "category": "model-routing",
+      "question": "Which model-routing badges are mentioned, and what are they used for?"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+LongContext upload smoke test document.
+
+Ulkeke is preparing a capstone dashboard for long-document question answering.
+The dashboard lets a user upload a document, load a question set, run one question
+or all questions, watch progress logs, review answers, and download submission.json.
+
+This test document mentions three workflow stages: upload, execution, and result review.
+It also mentions two visible model-routing badges: 3B for mapping and 24B for repair
+or final answer synthesis.
