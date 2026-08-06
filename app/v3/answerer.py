@@ -411,6 +411,7 @@ class V3Answerer:
             question_id=plan.question_id,
             answer=answer,
             evidence=[item.exact_quote for item in packet.evidence],
+            evidence_pages=[item.page for item in packet.evidence],
             source_pages=sorted({item.page for item in packet.evidence}),
             complete=bool(answer),
             strategy=plan.strategy,

@@ -7,7 +7,7 @@ import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.config import PipelineMode, get_settings
@@ -82,19 +82,12 @@ async def pipeline_settings():
     return {
         "mapper_model": settings.mapper_model,
         "answer_model": settings.answer_model,
-        "verifier_model": settings.verifier_model,
-        "planner_model": settings.planner_model,
-        "chunk_target_tokens": settings.chunk_target_tokens,
-        "chunk_overlap_tokens": settings.chunk_overlap_tokens,
         "question_batch_size": settings.question_batch_size,
         "record_batch_size": settings.record_batch_size,
         "max_concurrent_requests": settings.max_concurrent_requests,
         "request_timeout_seconds": settings.request_timeout_seconds,
         "max_retries": settings.max_retries,
         "pipeline_mode": settings.pipeline_mode.value,
-        "llm_temperature": settings.llm_temperature,
-        "llm_top_p": settings.llm_top_p,
-        "llm_seed": settings.llm_seed,
         "team_name": settings.team_name,
     }
 
@@ -152,6 +145,21 @@ async def get_document(document_id: str):
     return meta.model_dump(mode="json")
 
 
+@app.get("/documents/{document_id}/file")
+async def get_document_file(document_id: str):
+    """Serve the original uploaded bytes so the UI can render/highlight the source."""
+    store = _get_store()
+    meta = store.load_document_metadata(document_id)
+    if not meta:
+        raise HTTPException(404, "Document not found")
+    settings = get_settings()
+    path = settings.uploads_dir / meta.filename
+    if not path.exists():
+        raise HTTPException(404, "Original upload is no longer available")
+    media_type = "application/pdf" if path.suffix.lower() == ".pdf" else "text/plain"
+    return FileResponse(path, media_type=media_type, filename=meta.filename)
+
+
 # ---------- Answer ----------
 
 class AnswerRequest(BaseModel):
@@ -159,6 +167,15 @@ class AnswerRequest(BaseModel):
     questions: list[QuestionRequest]
     include_diagnostics: bool = True
     pipeline_mode: str = "ADAPTIVE_HIERARCHICAL"
+
+
+def _usage_by_model(records: list) -> dict:
+    totals: dict[str, dict[str, int]] = {}
+    for record in records:
+        bucket = totals.setdefault(record.model, {"input_tokens": 0, "output_tokens": 0})
+        bucket["input_tokens"] += record.input_tokens or 0
+        bucket["output_tokens"] += record.output_tokens or 0
+    return totals
 
 
 def _serialize_run(run: PipelineRun) -> dict:
@@ -171,6 +188,10 @@ def _serialize_run(run: PipelineRun) -> dict:
                 "question_id": answer.question_id,
                 "final_answer": answer.final_answer,
                 "answer_with_evidence": answer.answer_with_evidence,
+                "evidence_quotes": [
+                    item.model_dump(mode="json") for item in answer.evidence_quotes
+                ],
+                "source_pages": answer.source_pages,
                 "operator": answer.operator.value if answer.operator else None,
                 "coverage": (
                     answer.coverage.model_dump(mode="json")
@@ -188,6 +209,7 @@ def _serialize_run(run: PipelineRun) -> dict:
         "usage": {
             "total_input_tokens": run.total_input_tokens,
             "total_output_tokens": run.total_output_tokens,
+            "by_model": _usage_by_model(run.usage),
         },
         "timing": {"total_latency_ms": round(run.total_latency_ms, 1)},
         "diagnostics": {

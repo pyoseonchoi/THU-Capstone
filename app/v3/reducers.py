@@ -264,6 +264,12 @@ def reduce_absence(
         for assessment in by_topic[topic]
         if assessment.level in {"substantive", "mention_only"} and assessment.exact_quote
     ]
+    evidence_pages = [
+        assessment.page
+        for topic in present_topics
+        for assessment in by_topic[topic]
+        if assessment.level in {"substantive", "mention_only"} and assessment.exact_quote
+    ]
     pages = sorted(
         {
             assessment.page
@@ -285,6 +291,7 @@ def reduce_absence(
         question_id=plan.question_id,
         answer=answer,
         evidence=evidence,
+        evidence_pages=evidence_pages,
         source_pages=pages,
         complete=True,
         strategy=plan.strategy,
@@ -356,6 +363,7 @@ def reduce_claim_compare(
         question_id=plan.question_id,
         answer=answer,
         evidence=[claim_item.exact_quote, counter_item.exact_quote],
+        evidence_pages=[claim_item.page, counter_item.page],
         source_pages=sorted({claim_item.page, counter_item.page}),
         complete=True,
         strategy=plan.strategy,
@@ -428,6 +436,7 @@ def reduce_mapped_structure(
         question_id=plan.question_id,
         answer=answer,
         evidence=[item.exact_quote for item in used],
+        evidence_pages=[item.page for item in used],
         source_pages=sorted({item.page for item in used}),
         complete=True,
         strategy=plan.strategy,

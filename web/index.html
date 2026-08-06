@@ -4,15 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Long-Context Challenge — Pipeline Dashboard</title>
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=workspace-12">
 </head>
 <body>
 <div class="app">
 
-  <aside class="sidebar">
-    <div class="brand"><div class="mark">LC</div><span>LongContext</span></div>
-
-    <div class="index-card">
+  <aside class="sidebar status-widget">
+    <button class="status-toggle" id="status-toggle" type="button" aria-expanded="false" aria-controls="status-panel">
+      <span class="status-toggle-label">Document status</span>
+      <span class="status-toggle-value" id="status-toggle-value">0 / 0</span>
+    </button>
+    <div class="index-card status-panel" id="status-panel" aria-hidden="true">
       <div class="t">Document status</div>
       <div class="d" id="index-doc-label">Upload a document</div>
       <div class="bar"><i id="index-bar"></i></div>
@@ -22,150 +24,177 @@
 
   <main>
     <div class="topbar">
+      <div class="brand body-brand">
+        <div class="mark">LC</div>
+        <div class="brand-copy">
+          <span>LongContext</span>
+          <small>Team Ulkeke · 울크크</small>
+        </div>
+      </div>
       <h1>Pipeline Dashboard</h1>
     </div>
 
-    <div class="stats">
-      <div class="stat-card dark">
-        <div class="l">Total cost</div>
-        <div class="n" id="stat-cost">—</div>
-        <div class="delta"><span class="n2" id="stat-progress">0/0</span>&nbsp;questions done</div>
-      </div>
-      <div class="stat-card">
-        <div class="l">Tokens (in+out)</div>
-        <div class="n" id="stat-tokens">—</div>
-        <div class="delta">latest run</div>
-      </div>
-      <div class="stat-card">
-        <div class="l">Indexed chunks</div>
-        <div class="n" id="stat-chunks">0</div>
-        <div class="delta" id="stat-chunks-status">waiting for upload</div>
-      </div>
-      <div class="stat-card">
-        <div class="l">Question set</div>
-        <div class="n" id="stat-question-count">0</div>
-        <div class="delta">questions loaded</div>
-      </div>
-    </div>
+    <div class="error-banner" id="upload-error"></div>
 
-    <div class="card" style="margin-bottom:14px;">
-      <div class="card-head"><h2>Document &amp; Question Set</h2><span class="sub">Upload</span></div>
+    <div class="workspace-columns">
 
-      <div class="upload-grid">
-        <div class="upload-slot">
-          <div class="upload-slot-label">1 · Document</div>
-          <div class="dropzone" id="doc-dropzone">
-            <div class="icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11M12 15l7-4M12 15l-7-4M5 11V7l7-4 7 4v4"/></svg>
+      <section class="col col-document">
+        <div class="card">
+          <div class="card-head"><h2>Document &amp; Question Set</h2><span class="sub">Upload</span></div>
+
+          <div class="upload-grid">
+            <div class="upload-slot">
+              <div class="upload-slot-label">1 · Document</div>
+              <div class="dropzone" id="doc-dropzone">
+                <div class="icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11M12 15l7-4M12 15l-7-4M5 11V7l7-4 7 4v4"/></svg>
+                </div>
+                <div class="t">Drag a document here, or click to upload</div>
+                <div class="d">.txt · .pdf — up to 32MB</div>
+                <label class="browse" for="doc-input">Document</label>
+                <input type="file" id="doc-input" accept=".txt,.pdf" hidden>
+              </div>
             </div>
-            <div class="t">Drag a document here, or click to upload</div>
-            <div class="d">.txt · .pdf — up to 32MB</div>
-            <label class="browse" for="doc-input">Choose document</label>
-            <input type="file" id="doc-input" accept=".txt,.pdf" hidden>
-          </div>
-        </div>
 
-        <div class="upload-slot">
-          <div class="upload-slot-label">2 · Question set</div>
-          <div class="dropzone" id="questions-dropzone">
-            <div class="icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 17H7a5 5 0 01-1-9.9A6 6 0 0117 6a4.5 4.5 0 011 8.9M12 11v9M9 17l3-3 3 3"/></svg>
+            <div class="upload-slot">
+              <div class="upload-slot-label">2 · Question set</div>
+              <div class="dropzone" id="questions-dropzone">
+                <div class="icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 17H7a5 5 0 01-1-9.9A6 6 0 0117 6a4.5 4.5 0 011 8.9M12 11v9M9 17l3-3 3 3"/></svg>
+                </div>
+                <div class="t">Drag a question file here, or click to upload</div>
+                <div class="d">.json · .yaml · .yml</div>
+                <label class="browse" for="questions-input">Question set</label>
+                <input type="file" id="questions-input" accept=".json,.yaml,.yml" hidden>
+              </div>
             </div>
-            <div class="t">Drag a question file here, or click to upload</div>
-            <div class="d">.json · .yaml · .yml</div>
-            <label class="browse" for="questions-input">Choose question set</label>
-            <input type="file" id="questions-input" accept=".json,.yaml,.yml" hidden>
           </div>
-          <div class="sub" id="questions-count-label" style="margin-top:8px;display:block;">not uploaded yet</div>
-        </div>
-      </div>
 
-      <div class="filelist" id="file-list"></div>
+          <div class="filelist" id="file-list"></div>
 
-      <div class="chunk-summary" id="chunk-summary" style="display:none;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
-        <span>Split into <b id="chunk-summary-count">0</b> chunks · document uploaded</span>
-      </div>
-
-      <div class="error-banner" id="upload-error"></div>
-    </div>
-
-    <div class="card ask-hero">
-      <div class="card-head"><h2>Ask a Question</h2></div>
-
-      <div class="row" style="margin-top:0;">
-        <select id="question-picker" disabled>
-          <option>Upload a question set first</option>
-        </select>
-      </div>
-      <div class="row">
-        <span class="chip chip-cat" id="picked-category">uncategorized</span>
-        <span class="spacer"></span>
-        <button class="primary" id="run-selected-btn" disabled>Run this question</button>
-        <button class="primary" id="run-all-btn" disabled>Run all</button>
-      </div>
-
-      <div class="answer" id="answer-block" style="display:none;">
-        <div class="t" id="answer-text"></div>
-        <div class="answer-meta" id="answer-meta"></div>
-      </div>
-    </div>
-
-    <div class="row2">
-      <div class="card">
-        <div class="card-head">
-          <h2>Progress Log</h2>
-          <div class="pillnav">
-            <button class="on" data-filter="all">All</button>
-            <button data-filter="3B">3B</button>
-            <button data-filter="24B">24B</button>
+          <div class="chunk-summary" id="chunk-summary" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+            <span>Split into <b id="chunk-summary-count">0</b> chunks · document uploaded</span>
           </div>
         </div>
-        <ul class="log" id="log-list">
-          <li><div class="dot pending"></div><div><div class="step pending">Upload a document and question set, then run — progress will show up here</div></div></li>
-        </ul>
-      </div>
 
-      <div class="card">
-        <div class="card-head"><h2>Model Usage Mix</h2><span class="sub">this session</span></div>
-        <div class="donut-wrap">
-          <div class="donut" id="donut" style="background:conic-gradient(var(--line) 0 100%);"></div>
-          <div class="donut-legend">
-            <div class="legend-row"><span class="swatch" style="background:var(--slate)"></span>3B (mapping)<span class="n" id="donut-3b-pct">—</span></div>
-            <div class="legend-row"><span class="swatch" style="background:var(--amber)"></span>24B (repair/answer)<span class="n" id="donut-24b-pct">—</span></div>
+        <div class="card viewer-card">
+          <div class="card-head">
+            <h2>Source</h2>
+            <span class="sub" id="viewer-sub"></span>
+            <span class="spacer"></span>
+            <label class="display-pdf-btn" for="display-pdf-input" title="Optional: show a PDF copy here while answers still run on the uploaded document">Display as PDF</label>
+            <input type="file" id="display-pdf-input" accept=".pdf" hidden>
+          </div>
+          <div class="viewer-body" id="viewer-body">
+            <div class="viewer-empty" id="viewer-empty">Upload a document to preview it here.</div>
+            <div class="source-pdf-wrap" id="source-pdf-wrap" style="display:none;">
+              <div class="source-pdf-toolbar">
+                <button id="source-pdf-prev" type="button" aria-label="Previous page">&lsaquo;</button>
+                <span id="source-pdf-page-label" class="mono"></span>
+                <button id="source-pdf-next" type="button" aria-label="Next page">&rsaquo;</button>
+                <button id="source-pdf-expand" type="button" class="pdf-expand-btn" title="View larger" aria-label="View larger">⤢</button>
+              </div>
+              <div class="source-pdf-canvas-wrap" id="source-pdf-canvas-wrap">
+                <canvas id="source-pdf-canvas"></canvas>
+                <div id="source-pdf-highlight-layer" class="source-pdf-highlight-layer"></div>
+              </div>
+            </div>
+            <pre class="source-text-pane" id="source-text-pane" style="display:none;"></pre>
           </div>
         </div>
-        <div class="chunk-summary" style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px;">
-          Light extraction runs on 3B (mapping); repair and final synthesis run on 24B (repairing/answering)
+      </section>
+
+      <section class="col col-chat">
+        <div class="card chat-card">
+          <div class="card-head"><h2>Ask a Question</h2></div>
+
+          <div class="question-picker-panel">
+            <div class="question-picker-summary" id="question-picker-summary">Upload a question set to browse questions.</div>
+            <select id="question-picker" class="question-picker-list" disabled size="1">
+              <option>Upload a question set first</option>
+            </select>
+          </div>
+          <div class="row">
+            <span class="chip chip-cat" id="picked-category">uncategorized</span>
+            <span class="spacer"></span>
+            <div class="ask-button-group" aria-label="Question run actions">
+              <button class="primary" id="run-selected-btn" disabled>Run this question</button>
+              <button class="primary" id="run-all-btn" disabled>Run all</button>
+            </div>
+          </div>
+
+          <div class="ask-freeform">
+            <input type="text" id="freeform-input" placeholder="Or type your own question…" disabled>
+            <button class="primary" id="freeform-ask-btn" disabled>Ask</button>
+          </div>
+
+          <div class="chat-thread" id="chat-thread">
+            <div class="chat-empty" id="chat-empty">Pick a question above, or type your own, to get started.</div>
+          </div>
         </div>
-      </div>
-    </div>
+      </section>
 
-    <div class="card" style="margin-bottom:14px;">
-      <div class="card-head"><h2>Pipeline Parameters</h2><span class="sub">read-only · from .env</span></div>
-      <div class="stats" id="settings-grid" style="margin-bottom:0;">
-        <div class="stat-card"><div class="l">Loading…</div></div>
-      </div>
-    </div>
+      <section class="col col-performance">
+        <div class="stats stats-compact">
+          <div class="stat-card dark">
+            <div class="l">Total cost</div>
+            <div class="n" id="stat-cost">—</div>
+            <div class="delta"><span class="n2" id="stat-progress">0/0</span>&nbsp;questions done</div>
+          </div>
+          <div class="stat-card">
+            <div class="l">Tokens (in+out)</div>
+            <div class="n" id="stat-tokens">—</div>
+            <div class="delta">latest run</div>
+          </div>
+          <div class="stat-card">
+            <div class="l">Indexed chunks</div>
+            <div class="n" id="stat-chunks">0</div>
+            <div class="delta" id="stat-chunks-status">waiting for upload</div>
+          </div>
+          <div class="stat-card">
+            <div class="l">Question set</div>
+            <div class="n" id="stat-question-count">0</div>
+            <div class="delta">questions loaded</div>
+          </div>
+        </div>
 
-    <div class="history">
-      <div class="card-head" style="margin-bottom:12px;">
-        <h2 style="font-size:15px;">Question History</h2>
-        <span class="sub" id="submission-progress-label" style="margin-left:auto;"></span>
-        <button class="primary" id="download-submission-btn" disabled>Download submission.json</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>ID</th><th>Question</th><th>Category</th><th>Status</th></tr></thead>
-          <tbody id="history-body">
-            <tr><td colspan="4" class="qtext" style="color:var(--ink-faint)">No questions run yet</td></tr>
-          </tbody>
-        </table>
-      </div>
+        <div class="card perf-card">
+          <div class="card-head"><h2>Performance</h2><span class="sub">this session</span></div>
+          <div class="perf-models" id="perf-models">
+            <div class="perf-empty">Run a question to see the model breakdown.</div>
+          </div>
+        </div>
+
+        <div class="card submission-card">
+          <div class="card-head">
+            <h2>Submission</h2>
+            <span class="sub" id="submission-progress-label"></span>
+          </div>
+          <button class="primary" id="download-submission-btn" disabled style="width:100%;">Download submission.json</button>
+        </div>
+
+        <details class="card params-disclosure">
+          <summary>Pipeline Parameters <span class="sub">read-only · from .env</span></summary>
+          <div class="stats params-grid" id="settings-grid" style="margin-top:14px;margin-bottom:0;">
+            <div class="stat-card"><div class="l">Loading…</div></div>
+          </div>
+        </details>
+      </section>
+
     </div>
   </main>
+
+  <div class="pdf-lightbox" id="pdf-lightbox" aria-hidden="true">
+    <div class="pdf-lightbox-backdrop" id="pdf-lightbox-backdrop"></div>
+    <div class="pdf-lightbox-panel">
+      <button class="pdf-lightbox-close" id="pdf-lightbox-close" type="button" aria-label="Close">&times;</button>
+      <div class="pdf-lightbox-body" id="pdf-lightbox-body"></div>
+    </div>
+  </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
-<script src="app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="app.js?v=workspace-7"></script>
 </body>
 </html>

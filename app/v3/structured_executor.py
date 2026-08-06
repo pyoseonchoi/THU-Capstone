@@ -1514,6 +1514,7 @@ def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> Execution
             f"the other park cards use {common}."
         ),
         evidence=[_fact_evidence(record, fact)],
+        evidence_pages=[fact.page],
         source_pages=[fact.page],
         complete=True,
         strategy=plan.strategy,

@@ -188,6 +188,7 @@ class ExecutionResult(BaseModel):
     question_id: str
     answer: str = ""
     evidence: list[str] = Field(default_factory=list)
+    evidence_pages: list[int] = Field(default_factory=list)
     source_pages: list[int] = Field(default_factory=list)
     complete: bool = False
     strategy: Strategy
