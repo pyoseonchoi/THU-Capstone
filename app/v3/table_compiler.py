@@ -17,28 +17,12 @@ _CONTENTS_GROUP_RE = re.compile(
     r"\b(?P<group>B\s*O\s*X\s*E\s*S|S\s*P\s*O\s*T\s*L\s*I\s*G\s*H\s*T\s*S|"
     r"F\s*I\s*G\s*U\s*R\s*E\s*S|T\s*A\s*B\s*L\s*E\s*S)\b",
 )
-# The same section can be headed in words instead of in capitals — "List of
-# tables" opens the list that "T A B L E S" opens elsewhere. Setting a heading
-# this way is not a capitals-only decision, so it is read as one too, but only
-# where it stands alone on its line: the phrase also occurs inside sentences
-# ("see the list of tables below"), and reading one of those as a heading would
-# split the list it sits in.
-_CONTENTS_LIST_HEADING_RE = re.compile(
-    r"(?m)^[^\S\r\n]*list\s+of\s+"
-    r"(?P<group>boxes|spotlights|figures|tables)[^\S\r\n]*$",
-    re.IGNORECASE,
-)
 # A contents list may or may not close its numbering with a full stop —
 # "3.1 Title 156" and "3.1. Title 156" are the same list written two ways.
-# An annex numbers its own items, and it labels them with the annex it belongs
-# to: "A2.1" sits in the same list as "4.6" and is as much an entry as it is.
-# Only a prefix written against the number counts, so the words of a title
-# never run into the number that follows them.
-_CONTENTS_ID = r"(?:[A-Za-z]{1,2}\.?)?\d+(?:\.\d+){1,3}"
 _CONTENTS_ENTRY_RE = re.compile(
-    rf"(?<![A-Za-z0-9])(?P<identifier>{_CONTENTS_ID})\.?\s+"
+    r"(?<![A-Za-z0-9])(?P<identifier>(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\.?\s+"
     r"(?P<title>.+?)\s+(?P<page>\d{1,3})"
-    rf"(?=\s+(?:[A-Za-z]{{3,12}}\s+)?(?:{_CONTENTS_ID})\.?\s+|$)",
+    r"(?=\s+(?:[A-Za-z]{3,12}\s+)?(?:(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\.?\s+|$)",
     re.I | re.S,
 )
 _CONTENTS_HEADING_RE = re.compile(
@@ -46,7 +30,7 @@ _CONTENTS_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 _CONTENTS_IDENTIFIER = (
-    r"(?:[A-Za-z]{1,2}\.\d+(?:\.\d+){0,2}|[A-Za-z]{0,2}\d+(?:\.\d+){1,3})"
+    r"(?:[OS]\.\d+(?:\.\d+){0,2}|S?\d+(?:\.\d+){1,3})"
 )
 _BODY_CAPTION_RE = re.compile(
     rf"\b(?P<group>Box|Spotlight|Figure|Table)\s+"
@@ -373,13 +357,7 @@ def compile_contents(
             break
         selected.append(page)
     text = "\n\n".join(f"[Page {page.page_number}]\n{page.text}" for page in selected)
-    headings = sorted(
-        [
-            *_CONTENTS_GROUP_RE.finditer(text),
-            *_CONTENTS_LIST_HEADING_RE.finditer(text),
-        ],
-        key=lambda match: match.start(),
-    )
+    headings = list(_CONTENTS_GROUP_RE.finditer(text))
     entries: list[ContentsEntry] = []
     aliases = {
         "boxes": "boxes",
@@ -430,11 +408,7 @@ def compile_contents(
             ))
 
     heading_groups = {
-        _compact_heading(match.group("group"))
-        for match in (
-            *_CONTENTS_GROUP_RE.finditer(text),
-            *_CONTENTS_LIST_HEADING_RE.finditer(text),
-        )
+        _compact_heading(match.group("group")) for match in _CONTENTS_GROUP_RE.finditer(text)
     }
     caption_groups = {entry.category for entry in caption_entries}
     caption_trusted = bool(heading_groups) and heading_groups <= caption_groups
