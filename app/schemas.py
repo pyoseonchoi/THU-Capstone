@@ -196,6 +196,12 @@ class UsageRecord(BaseModel):
 # Pipeline output models
 # ---------------------------------------------------------------------------
 
+class EvidenceQuote(BaseModel):
+    """One verbatim quote backing an answer, with its source page if known."""
+    quote: str
+    page: Optional[int] = None
+
+
 class PipelineAnswer(BaseModel):
     """Final answer for one question."""
     question_id: str
@@ -205,6 +211,8 @@ class PipelineAnswer(BaseModel):
     operation_result: Optional[OperationResult] = None
     coverage: Optional[CoverageReport] = None
     warnings: list[str] = Field(default_factory=list)
+    evidence_quotes: list[EvidenceQuote] = Field(default_factory=list)
+    source_pages: list[int] = Field(default_factory=list)
 
 
 class PipelineRun(BaseModel):
