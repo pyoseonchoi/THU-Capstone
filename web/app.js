@@ -1,6 +1,6 @@
 // web/app.js — talks to the FastAPI backend directly; no build step, no framework.
 
-const API_BASE = "http://127.0.0.1:8002";
+let API_BASE = "http://127.0.0.1:8002";
 
 const state = {
   documentId: null,
@@ -835,7 +835,38 @@ function initStatusWidget() {
   });
 }
 
+// ---------- model backend switch ----------
+
+function switchBackend(newBase) {
+  if (newBase === API_BASE) return;
+  API_BASE = newBase;
+
+  // A different backend is a different process with its own document/run
+  // store -- nothing from the old session (document, chat thread, evidence,
+  // submission, usage totals) is valid against it, so clear everything
+  // rather than leave stale state pointing at IDs the new server has never
+  // seen.
+  removeDocument();
+  removeQuestions();
+  state.submission = null;
+  state.answersById.clear();
+  state.modelUsageTotals.clear();
+  renderPerformanceStats();
+  el("chat-thread").innerHTML = '<div class="chat-empty" id="chat-empty">Pick a question above, or type your own, to get started.</div>';
+  el("download-submission-btn").disabled = true;
+  el("submission-progress-label").textContent = "";
+  el("stat-tokens").textContent = "—";
+  el("stat-progress").textContent = "0/0";
+  el("file-list").innerHTML = "";
+
+  pollUsage();
+  loadPipelineSettings();
+}
+
 function initHandlers() {
+  el("backend-select").addEventListener("change", (e) => {
+    switchBackend(e.target.value);
+  });
   el("doc-input").addEventListener("change", (e) => {
     if (e.target.files[0]) uploadDocument(e.target.files[0]);
   });

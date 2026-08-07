@@ -554,3 +554,19 @@ button.primary:disabled{
   white-space:nowrap;
 }
 .display-pdf-btn:hover{border-color:var(--accent);}
+
+/* ---------- model backend selector ---------- */
+.model-select-card{display:flex;flex-direction:column;gap:8px;padding:16px 18px;}
+.model-select-label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);}
+.model-select{
+  width:100%;
+  appearance:auto;
+  background:var(--card-2);
+  color:var(--ink);
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:8px 10px;
+  font-size:13px;
+  font-weight:700;
+}
+.model-select-hint{font-size:10.5px;color:var(--ink-faint);line-height:1.4;}

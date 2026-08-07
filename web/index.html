@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Long-Context Challenge — Pipeline Dashboard</title>
-<link rel="stylesheet" href="styles.css?v=workspace-12">
+<link rel="stylesheet" href="styles.css?v=workspace-16">
 </head>
 <body>
 <div class="app">
@@ -136,6 +136,16 @@
       </section>
 
       <section class="col col-performance">
+        <div class="card model-select-card">
+          <div class="model-select-label">Model backend</div>
+          <select id="backend-select" class="model-select">
+            <option value="http://127.0.0.1:8002">Chaeeun</option>
+            <option value="http://127.0.0.1:8003">Sandwich</option>
+            <option value="http://127.0.0.1:8004">Croissant</option>
+          </select>
+          <div class="model-select-hint" id="backend-select-hint">Switching resets the current document — re-upload after changing.</div>
+        </div>
+
         <div class="stats stats-compact">
           <div class="stat-card dark">
             <div class="l">Total cost</div>
@@ -195,6 +205,6 @@
 </div>
 <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-<script src="app.js?v=workspace-7"></script>
+<script src="app.js?v=workspace-10"></script>
 </body>
 </html>
