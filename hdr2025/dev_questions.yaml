@@ -1,0 +1,328 @@
+# PRACTICE question set — written against `nationalparks_europe.txt`
+# (Lonely Planet, *National Parks of Europe*, 278 pages, ~88,000 words).
+#
+# 21 questions, three per category. Every key point below was verified against
+# the document itself: the figures come from the per-park "Park in numbers"
+# boxes and from the running prose, and the absence questions were checked by
+# searching the whole text for the terms concerned.
+#
+# The three contradiction questions are real internal inconsistencies in the
+# book, not planted ones. They are the most interesting questions in the set,
+# because finding them requires holding facts from opposite ends of the
+# document side by side.
+#
+# Replace this file if you swap the practice document.
+
+# ---------------------------------------------------------------- aggregation
+
+- id: d01
+  category: aggregation
+  question: >
+    How many national parks does the book profile in total, and how many of them
+    are in Spain? Name the Spanish ones.
+  key_points:
+    - "States that 60 national parks are profiled"
+    - "States that 6 of the parks are in Spain"
+    - "Names Aigüestortes i Estany de Sant Maurici and Atlantic Islands of Galicia among the Spanish parks"
+    - "Names Doñana and Sierra Nevada among the Spanish parks"
+    - "Names Ordesa (y Monte Perdido) and Picos de Europa among the Spanish parks"
+  forbidden:
+    - "Gives the total number of parks as anything other than 60"
+    - "States that Spain has 5 or fewer, or 7 or more, parks"
+    - "Lists Pyrenees National Park or Andorra as one of the Spanish entries"
+
+- id: d02
+  category: aggregation
+  question: >
+    Counting across every park's "Park in numbers" box, how many parks report a
+    highest point of 3000 metres or more? Name them.
+  key_points:
+    - "States that 8 parks report a highest point of 3000m or above"
+    - "Names Écrins (Barre des Écrins, 4102m) as one of them"
+    - "Names Hohe Tauern (Grossglockner, 3798m) as one of them"
+    - "Names Sierra Nevada (3479m) and Etna (3350m) among them"
+    - "Names Ordesa (3348m), Pyrenees (3298m), Swiss (3174m) and Aigüestortes (3033m) among them"
+  forbidden:
+    - "Gives the count as 5 or fewer"
+    - "Includes Jotunheimen (2469m), Triglav (2864m) or Valbona Valley (2694m) in the list"
+    - "Claims the highest point reported anywhere in the book is below 4000m"
+    - "Answers 300, confusing Hohe Tauern's count of peaks above 3000m with a number of parks"
+
+- id: d03
+  category: aggregation
+  question: >
+    How many of the parks are in Croatia and how many are in Montenegro? Name
+    them.
+  key_points:
+    - "States that 3 parks are in Croatia"
+    - "Names Kornati, Paklenica and Plitvice as the Croatian parks"
+    - "States that 2 parks are in Montenegro"
+    - "Names Durmitor and Lake Skadar as the Montenegrin parks"
+  forbidden:
+    - "Gives Croatia a count other than 3"
+    - "Places Plitvice in Slovenia, Bosnia or Serbia"
+    - "Omits Lake Skadar from Montenegro"
+
+# ---------------------------------------------------------------- superlative
+
+- id: d04
+  category: superlative
+  question: >
+    Of all the parks in the book, which covers the largest area, and how large
+    is it?
+  key_points:
+    - "Names Vatnajökull National Park as the largest"
+    - "Gives the area as 13,600 sq km"
+    - "States that it is in Iceland"
+  forbidden:
+    - "Names Cairngorms, Hardangervidda or Nordvest-Spitsbergen as the largest park in the book"
+    - "Gives an area figure outside the range 13,000-14,000 sq km"
+
+- id: d05
+  category: superlative
+  question: >
+    Across every park profiled, what is the highest summit named as a park's
+    highest point, how high is it, and which park is it in?
+  key_points:
+    - "Names Barre des Écrins as the highest summit"
+    - "Gives the height as 4102m"
+    - "States that it is in Écrins National Park"
+    - "Places Écrins in France"
+  forbidden:
+    - "Names Grossglockner, Mulhacén or Mont Blanc as the highest"
+    - "Gives a height outside the range 4090-4110m"
+
+- id: d06
+  category: superlative
+  question: >
+    Which park reports the largest number of visitors per year, and how many?
+  key_points:
+    - "Names the Lake District National Park"
+    - "Gives the figure as 15 million visitors per year"
+    - "Notes that this is larger than the other visitor figures the book gives, such as Écrins' 800,000 or Plitvice's more than a million"
+  forbidden:
+    - "Names Écrins or Plitvice as the most visited park"
+    - "Gives the figure as 800,000, or as around one million"
+    - "Gives a figure in the thousands rather than the millions"
+
+# -------------------------------------------------------------------- absence
+
+- id: d07
+  category: absence
+  question: >
+    Of the following four subjects — Unesco World Heritage designations, the
+    legacy of glaciation, accessibility for visitors with reduced mobility, and
+    brown bears — which is never substantively discussed anywhere in the book?
+  key_points:
+    - "Identifies accessibility for visitors with reduced mobility as the subject never discussed"
+    - "Notes that the other three subjects are each covered somewhere in the book"
+  forbidden:
+    - "Names Unesco World Heritage designations, glaciation or brown bears as the missing subject"
+    - "Claims all four subjects are covered"
+    - "Claims the book contains a section on wheelchair access or disabled facilities"
+
+- id: d08
+  category: absence
+  question: >
+    The book names several conservation designations. Of Natura 2000, Unesco
+    World Heritage status, Unesco biosphere reserve status, and national nature
+    reserves, which one is never mentioned anywhere?
+  key_points:
+    - "Identifies Natura 2000 as the designation that is never mentioned"
+    - "Notes that Unesco World Heritage status is mentioned for several parks"
+    - "Notes that Unesco biosphere reserve status and national nature reserves both appear"
+  forbidden:
+    - "Names Unesco World Heritage status as the missing designation"
+    - "Claims Natura 2000 is discussed in connection with any park"
+
+- id: d09
+  category: absence
+  question: >
+    Of these four threats to protected areas — poaching, wartime damage and
+    military history, glacier retreat, and pressure from visitor numbers —
+    which is never raised anywhere in the book?
+  key_points:
+    - "Identifies poaching as the threat that is never raised"
+    - "Notes that glacier retreat is discussed, for example at Jostedalsbreen"
+    - "Notes that visitor pressure is discussed, for example at Cinque Terre"
+    - "Notes that wartime history appears, for example at Plitvice or Saxon Switzerland"
+  forbidden:
+    - "Names glacier retreat or visitor pressure as the missing threat"
+    - "Claims poaching is discussed in connection with any park"
+
+# --------------------------------------------------------------- contradiction
+
+- id: d10
+  category: contradiction
+  question: >
+    The book makes a claim about Snowdon's rank among British mountains that its
+    own figures elsewhere contradict. What is the claim, and what contradicts it?
+  key_points:
+    - "States that the Snowdonia entry calls Snowdon, at 1085m, Britain's second-highest peak"
+    - "States that the Cairngorms entry gives Ben Macdui as 1309m"
+    - "Notes that the Cairngorms entry also says the park contains five of Britain's six highest summits"
+    - "Concludes that Snowdon therefore cannot be Britain's second-highest peak"
+  forbidden:
+    - "Claims the book is consistent about Snowdon's rank"
+    - "States that Snowdon is Britain's highest peak"
+    - "Resolves the conflict by asserting Ben Macdui is lower than Snowdon"
+
+- id: d11
+  category: contradiction
+  question: >
+    The book calls one park the largest in its country, but gives another park
+    in the same country a larger area. Which two parks, and what are the figures?
+  key_points:
+    - "Identifies Hardangervidda as the park described as Norway's largest national park"
+    - "Gives Hardangervidda's area as 3430 sq km"
+    - "Identifies Nordvest-Spitsbergen as the other Norwegian park"
+    - "Gives Nordvest-Spitsbergen's land area as 3583 sq km, which is larger"
+  forbidden:
+    - "Claims the book contains no such inconsistency"
+    - "Names Jotunheimen or Jostedalsbreen as the larger park"
+    - "Asserts that Nordvest-Spitsbergen is not in Norway"
+
+- id: d12
+  category: contradiction
+  question: >
+    Every park's "Park in numbers" box reports its area, but one park is
+    reported in different units from all the others. Which park, and what units?
+  key_points:
+    - "Identifies Jotunheimen as the park reported in different units"
+    - "States that its area is given as 1151 sq miles"
+    - "States that every other park's area is given in square kilometres"
+  forbidden:
+    - "Claims all the parks are reported in the same units"
+    - "Names a park other than Jotunheimen"
+
+# --------------------------------------------------------------- cross_section
+
+- id: d13
+  category: cross_section
+  question: >
+    Which parks in the book extend across, or are formally paired across, an
+    international border? Give the countries involved in each case.
+  key_points:
+    - "Identifies the Curonian Spit as crossing into Russia (Kaliningrad) from Lithuania"
+    - "States that 52 km of the spit's 98 km lie in Lithuania"
+    - "Identifies the Wadden Sea as shared between three countries"
+    - "Names Denmark, Germany and the Netherlands as those three countries"
+    - "Identifies the Tatras as twinned with Tatranský Národný Park across the Slovakian border since 1992"
+  forbidden:
+    - "Claims none of the parks cross an international border"
+    - "States that the whole Curonian Spit lies within Lithuania"
+    - "Gives a number of Wadden Sea countries other than three"
+
+- id: d14
+  category: cross_section
+  question: >
+    The book mentions Unesco in several different senses. Which parks are
+    described as actually inscribed on the World Heritage List, and which are
+    described only as nominated or on a tentative list?
+  key_points:
+    - "Names Durmitor as inscribed on the World Heritage List, since 1980"
+    - "Names Plitvice as inscribed, in 1979"
+    - "Identifies Arcipelago di La Maddalena as only on a tentative list, from 2006"
+    - "Identifies Lake Skadar as only nominated, in late 2011"
+    - "Distinguishes biosphere reserve status, held by Retezat and the Tatras, from World Heritage inscription"
+  forbidden:
+    - "Claims Arcipelago di La Maddalena or Lake Skadar is an inscribed World Heritage Site"
+    - "Treats biosphere reserve status and World Heritage inscription as the same designation"
+
+- id: d15
+  category: cross_section
+  question: >
+    Two park entries, far apart in the book, each record a climbing "first" with
+    a date. What are the two events, and when did they happen?
+  key_points:
+    - "Identifies the first ascent of Barre des Écrins, in Écrins National Park"
+    - "Gives the date as 25 June 1864"
+    - "Identifies Britain's first recorded rock climb, on Clogwyn Du'r Arddu in Snowdonia"
+    - "Gives the year as 1798"
+    - "Names Peter Bailey Williams and William Bingley as the climbers of the 1798 ascent"
+  forbidden:
+    - "Gives the Barre des Écrins first ascent as a year other than 1864"
+    - "Places the first recorded British rock climb in the Lake District or the Cairngorms"
+
+# ------------------------------------------------------------- global_synthesis
+
+- id: d16
+  category: global_synthesis
+  question: >
+    Taking the book as a whole, how does it portray the relationship between
+    human habitation and wilderness in Europe's national parks?
+  key_points:
+    - "States that the book presents these parks as inhabited, working landscapes rather than untouched wilderness"
+    - "Notes that traditional land use is treated as part of what the parks protect, not a threat to it"
+    - "Cites Sámi reindeer herding at Abisko as an example of continuing traditional use"
+    - "Cites a further example such as Hortobágy's puszta herding, Cinque Terre's drystone terraces or Hutsul culture in the Carpathians"
+    - "Notes that the book frequently pairs wilderness description with villages, farms or cultural sites"
+  forbidden:
+    - "Claims the book portrays the parks as uninhabited wilderness"
+    - "Claims the book treats human activity purely as a threat to be excluded"
+
+- id: d17
+  category: global_synthesis
+  question: >
+    Glaciation recurs throughout the book as an explanation. How is it used
+    across the different park entries, and what work does it do for the author?
+  key_points:
+    - "States that the last ice age is repeatedly given as the force that shaped the landscape"
+    - "Notes it is used to explain landforms such as valleys, lakes, cirques and moraines"
+    - "Cites at least two parks where this appears, for example Abisko, the Cairngorms, Sarek or Snowdonia"
+    - "Notes that some parks still have living glaciers, such as Jostedalsbreen or Vatnajökull, presented as the same process continuing"
+    - "Notes the book links present-day glacier retreat to global warming"
+  forbidden:
+    - "Claims glaciation is discussed for only one or two parks"
+    - "Claims the book never connects glacier retreat to a changing climate"
+
+- id: d18
+  category: global_synthesis
+  question: >
+    How does the book handle species conservation across its entries — what
+    recurring story does it tell about threatened wildlife?
+  key_points:
+    - "States that the book repeatedly tells a recovery story: a species brought near extinction and then rebuilt"
+    - "Cites the Abruzzo chamois, reduced to a few dozen and now numbering over 2000"
+    - "Cites the Iberian lynx at Doñana, described as the world's most endangered wild cat, with 76 counted in 2015"
+    - "Cites a further example such as the Elbe salmon at Saxon Switzerland bouncing back"
+    - "Notes the tone is broadly optimistic, presenting the parks as conservation successes"
+  forbidden:
+    - "Claims the book presents wildlife populations as uniformly declining"
+    - "Claims the book gives no population figures for threatened species"
+
+# --------------------------------------------------------------------- needle
+
+- id: d19
+  category: needle
+  question: >
+    What did the Icehotel start out as, and in what year?
+  key_points:
+    - "States that it began as a small igloo-art gallery"
+    - "Gives the year as 1989"
+  forbidden:
+    - "Gives a year other than 1989"
+    - "States that it was built as a hotel from the outset"
+
+- id: d20
+  category: needle
+  question: >
+    What is the estimated age of the oldest tree named in the book, and what and
+    where is that tree?
+  key_points:
+    - "Gives the estimated age as 1380 years"
+    - "Names the Baykuchevata Macedonian pine"
+    - "States that it is in Pirin National Park, Bulgaria"
+  forbidden:
+    - "Gives an age of around 1000 years rather than 1380"
+    - "Places the tree in a park other than Pirin"
+
+- id: d21
+  category: needle
+  question: >
+    In what year is Etna's first recorded eruption dated?
+  key_points:
+    - "States that the first recorded eruption is dated to 475 BC"
+  forbidden:
+    - "Gives the date as AD 475 rather than 475 BC"
+    - "Gives the year of a modern eruption such as 2011 instead"

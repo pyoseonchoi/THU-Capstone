@@ -40,14 +40,28 @@ P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
 
 if DRY:
-    calls = {"reader": 0, "synth": 0, "coverage": 0, "gap": 0}
+    # A plain dict here meant calls["adjudicate"] += 1 raised KeyError inside
+    # the pipeline's own try/except, which reported it as "adjudication failed"
+    # -- a mock defect wearing a pipeline defect's clothes.
+    from collections import defaultdict
+    calls = defaultdict(int)
 
-    def fake(prompt: str) -> str:
-        # Match on how each prompt OPENS. Matching on content anywhere is what
-        # made the first version of this mock reply to the gap-fill prompt as
-        # though it were a reader -- the gap prompt embeds the whole evidence
-        # block, so it contains every marker a reader reply does, and the mock
-        # echoed a slice of its own prompt back into the answer.
+    # A READER prompt is the only kind that carries the verbatim slice, and it
+    # always announces it the same way. Every other prompt embeds the readers'
+    # REPLIES instead, which is why matching on reply markers cannot work:
+    # the arc synthesis prompt contains 'POSITION: part' and 'STANCE:' because
+    # the reader lines are quoted inside it, and it contains no slice at all.
+    # An earlier mock read those markers, took the reader branch, and tried to
+    # split out a part number that was not there -- so the pipeline's own
+    # try/except reported 'synthesis failed (list index out of range)'. A mock
+    # defect wearing a pipeline defect's clothes, and the second time this file
+    # has produced one.
+    #
+    # So: identify a reader by the slice marker, positively, and let everything
+    # else be a synthesis-shaped prompt. Nothing here indexes into a split.
+    _READER_MARKER = "TEXT (part "
+
+    def fake(prompt: str, model: str | None = None) -> str:
         head = prompt.lstrip()[:60]
         if head.startswith("Below is a question"):          # coverage check
             calls["coverage"] += 1
@@ -55,15 +69,32 @@ if DRY:
         if head.startswith("An answer to the question below"):   # gap fill
             calls["gap"] += 1
             return P.NO_EVIDENCE
-        if head.startswith("Write one final answer"):
-            calls["synth"] += 1
+        if head.startswith("Below are an answer"):          # g8 merge
+            calls["merge"] += 1
+            return "A mocked merged answer, 42 percent."
+        if head.startswith("Below is a shortlist"):         # g8 adjudication
+            calls["adjudicate"] += 1
+            return "1 | CONFLICT | two tables give different values"
+
+        if _READER_MARKER not in prompt:
+            # No slice: this is a synthesis, however it happens to open. Counted
+            # under its opening words so an unrecognised prompt is VISIBLE in
+            # the tally rather than silently answered as something else.
+            known = (head.startswith("Write one final answer")
+                     or head.startswith("Below are reports from readers")
+                     or head.startswith("Answer the question below"))
+            calls["synth" if known else f"synth?({head[:28]!r})"] += 1
             return "A mocked final answer."
+
         calls["reader"] += 1
-        if "POSITION: part {n}".replace("{n}", "") in prompt and "STANCE:" in prompt:
-            n = prompt.split("TEXT (part ", 1)[1].split(" of", 1)[0]
-            return (f"POSITION: part {n}\nSECTION: Chapter {n}\n"
+        if "ANCHOR:" in prompt:                             # g8 cross-section
+            return ("ANCHOR: mocked phrase\nENTITY: Mockland\n"
+                    "FACT: a mocked fact, 42 percent.\nWHERE: Chapter 1")
+        if "STANCE:" in prompt:                             # arc reader
+            part = prompt.split(_READER_MARKER, 1)[1].split(" of", 1)[0]
+            return (f"POSITION: part {part}\nSECTION: Chapter {part}\n"
                     f"STANCE: mocked stance.\nFRAMING: mocked\n"
-                    f"EVIDENCE: p{n} -- a mocked figure")
+                    f"EVIDENCE: p{part} -- a mocked figure")
         return "Section 1 -- a mocked fact, 42 percent"
 
     P.call_llm = fake
@@ -80,6 +111,18 @@ print(f"answering  {', '.join(QIDS)} ({len(QIDS)} of {len(questions)})"
       + ("   [DRY RUN -- no broker calls]" if DRY else ""))
 
 doc = P.load_document(DOC)
+
+# The one line that says which path is live. Worth printing here too: a subset
+# run is where a change gets checked, and three generations shipped with a
+# subsystem switched off because nobody read the log for it.
+if "chunking_mode" in doc:
+    print(f"segmentation  {len(doc['headers']):,} '## ' headers, coverage "
+          f"{doc['header_coverage']:.3f} -> chunking_mode = {doc['chunking_mode']}"
+          + (f"; entity roster {len(doc['entity_roster'])}"
+             if doc.get("entity_roster") else "; no entity roster")
+          + (f"; provenance window {P.provenance_window(doc)}"
+             if hasattr(P, "provenance_window") else ""))
+
 started = time.perf_counter()
 answers = []
 
