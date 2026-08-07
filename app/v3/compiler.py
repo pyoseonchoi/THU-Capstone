@@ -12,7 +12,7 @@ from app.schemas import DocumentPage
 from app.v3.models import CompiledDocument, CompiledRecord, NumberFact
 from app.v3.table_compiler import compile_contents, compile_flat_tables, compile_tables
 
-COMPILER_VERSION = "v3.3"
+COMPILER_VERSION = "v3.4"
 
 _HEADING_PREFIX_RE = re.compile(r"^#{1,6}\s*")
 _HEADING_RE = re.compile(r"^(?P<marks>#{1,6})\s+(?P<title>.+?)\s*$")

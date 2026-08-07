@@ -109,7 +109,7 @@ class CompiledDocument(BaseModel):
     """Question-independent representation produced once per upload."""
 
     document_id: str
-    compiler_version: str = "v3.3"
+    compiler_version: str = "v3.4"
     record_kind: str = "segments"
     entity_label: str = "record"
     records: list[CompiledRecord] = Field(default_factory=list)
