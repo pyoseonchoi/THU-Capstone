@@ -15,11 +15,21 @@ PDF/TXT
   -> page-preserving parser
   -> question-independent Document Compiler
        -> generic repeated-entity registry with integrity checks
+       -> boilerplate-cycle chapter segmentation when fact anchors are lost
        -> deterministic number/label binding for mixed fact-card layouts
+       -> fields named by the document's own wording, one naming authority
+       -> wording variants of one metric folded into a single field
        -> flattened multi-page table reconstruction and ranked-row validation
        -> body-caption cross-validation for interleaved Contents lists
        -> consecutive fallback segments for arbitrary Markdown
        -> supplementary front/back-matter records
+  -> per-record structured profiling (only when the registry has holes)
+       -> induced metric vocabulary, then one cheap call per record
+       -> every fact kept must be quoted verbatim from its own record
+  -> question routing against the discovered field list
+       -> each question placed on the operation that answers it, by meaning
+       -> arguments (field, groups, threshold, direction) bounded to the
+          document's own fields and groups, and declined when unsure
   -> deterministic question compiler with composable operation plans
   -> Python structured executor for FILTER, GROUP_BY, COUNT, LIST, ARGMAX,
      ARGMIN, JOIN, comparison, and date math
@@ -57,7 +67,20 @@ no general verifier that can rewrite a count, maximum, or absence verdict.
   contents counts agree; otherwise the exhaustive fallback remains available.
 - Inline numbered profiles are accepted only when ordinals, titles, countries,
   and labelled fact cards pass completeness checks.
-- A structured maximum is withheld if any registry entity lacks the target field.
+- A structured count or maximum is withheld unless the target field is bound
+  for every record; partial coverage defers to the exhaustive mapper rather
+  than answering from the rows that happened to parse.
+- Records are segmented by recurring chapter furniture when fact-section
+  anchors go missing, so the record count is calibrated by the document
+  itself rather than by domain vocabulary.
+- Profiling is skipped entirely when the compiler already bound a fact card
+  for every record, so well-parsed documents cost no extra tokens.
+- No field name, question phrasing, or subject vocabulary is written into the
+  code. Fields are named by the document, and a question reaches an operation
+  by what it means rather than by the words one evaluation happened to use.
+- A question the router is unsure about is read in full by the exhaustive
+  scan, which is slower and always correct, rather than answered from an
+  operation that may not be the one it asked for.
 - Contents counts are trusted only when their identifiers are confirmed by
   source-literal body captions; ambiguous layouts use a bounded cached fallback.
 - Stored documents are automatically recompiled when the compiler contract changes.

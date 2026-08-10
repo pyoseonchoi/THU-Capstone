@@ -9,56 +9,29 @@ from app.v3.models import (
     CompiledDocument,
     OperationKind,
     OperationStep,
+    QuestionShape,
+    ShapePlan,
     Strategy,
     V3QuestionPlan,
 )
 
-_FIELD_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("highest operating point", "operating elevation", "highest crest"), "highest_point"),
-    (("highest point", "highest summit", "highest peak"), "highest_point"),
-    ((
-        "annual visiting researchers",
-        "annual number of visiting researchers",
-        "visiting researchers per year",
-    ), "annual_visitors"),
-    (("annual visitors", "visitor figure", "number of visitors"), "annual_visitors"),
-    ((
-        "annual generation",
-        "annual output",
-        "pumping-equivalent output",
-        "gigawatt-hours",
-    ), "annual_output"),
-    ((
-        "area monitored",
-        "monitored area",
-        "monitored reservoir",
-        "project area",
-        "largest area",
-        "covers",
-    ), "area"),
-    ((
-        "year established",
-        "establishment year",
-        "station's founding",
-        "commissioned",
-        "commissioning year",
-    ), "establishment_year"),
-    (("life expectancy",), "life_expectancy_2023"),
-    (("gross national income per capita", "gni per capita"), "gni_per_capita_2023"),
-    (("human development index value", "hdi value"), "hdi_2023"),
-    (("estimated age", "oldest tree"), "oldest_tree_age"),
-    (("first recorded eruption",), "first_recorded_eruption_year"),
-)
-
 _GENERIC_CAPITALIZED = {
+    "According",
     "Across",
     "Among",
+    "Based",
+    "Compare",
+    "Count",
     "Counting",
+    "Describe",
+    "Every",
     "Explain",
     "For",
     "How",
     "Identify",
     "In",
+    "List",
+    "Name",
     "Of",
     "State",
     "Taking",
@@ -66,7 +39,10 @@ _GENERIC_CAPITALIZED = {
     "These",
     "Two",
     "What",
+    "When",
+    "Where",
     "Which",
+    "Why",
 }
 
 
@@ -105,20 +81,35 @@ def _target_field(
     document: CompiledDocument | None = None,
 ) -> str:
     folded = question.casefold()
-    for terms, field in _FIELD_ALIASES:
-        if any(term in folded for term in terms):
-            return field
     if document is not None:
         scored: list[tuple[int, str]] = []
         question_terms = set(re.findall(r"[a-z0-9]+", folded))
         for field in document.field_catalog:
-            terms = set(field.casefold().split("_")) - {"2023", "year"}
+            # An edition year in a field name is not what it measures.
+            terms = {
+                term
+                for term in field.casefold().split("_")
+                if term and term != "year" and not term.isdigit()
+            }
             overlap = len(terms & question_terms)
             if overlap:
                 scored.append((overlap, field))
         if scored:
             return max(scored, key=lambda item: (item[0], len(item[1])))[1]
     return ""
+
+
+def _records_years(document: CompiledDocument | None, field: str) -> bool:
+    """Report whether a field's values read as calendar years."""
+    if document is None or not field:
+        return False
+    values = [
+        fact.value
+        for record in document.records
+        for fact in record.number_facts
+        if fact.field == field
+    ]
+    return bool(values) and all(1000 <= value <= 2100 for value in values)
 
 
 def _threshold(question: str) -> float | None:
@@ -130,13 +121,25 @@ def _threshold(question: str) -> float | None:
     return float(match.group(1).replace(",", "")) if match else None
 
 
+_DESCRIBED_AS_RE = re.compile(
+    r"\bdescribed as\s+(?P<values>[a-z][\w-]*(?:\s*,\s*[a-z][\w-]*)*"
+    r"\s*,?\s+or\s+[a-z][\w-]*)",
+    re.IGNORECASE,
+)
+
+
 def _status_values(question: str) -> list[str]:
-    folded = question.casefold()
-    return [
-        status
-        for status in ("inscribed", "nominated", "tentative")
-        if status in folded
-    ]
+    """Return the states a question enumerates for its entities.
+
+    A question that filters on a status spells the alternatives out, so the
+    document's own vocabulary for them comes from the question rather than
+    from a list of statuses written into the code.
+    """
+    match = _DESCRIBED_AS_RE.search(question)
+    if not match:
+        return []
+    parts = re.split(r"\s*,\s*(?:or\s+)?|\s+or\s+", match.group("values"))
+    return [part.strip().casefold() for part in parts if part.strip()]
 
 
 def _mentioned_countries(
@@ -150,12 +153,50 @@ def _mentioned_countries(
     return [country for country in countries if country.casefold() in folded]
 
 
+def _shaped_steps(shape: ShapePlan) -> list[OperationStep] | None:
+    """Build the operation sequence a routed shape states outright.
+
+    Where the router named the operation, its comparator, threshold and
+    direction, reading those back out of the wording adds nothing and can
+    disagree with the routing that chose the field.
+    """
+    if not shape.routes or not shape.field:
+        return None
+    if shape.shape == QuestionShape.COUNT_BY_THRESHOLD:
+        return [
+            OperationStep(
+                kind=OperationKind.FILTER,
+                field=shape.field,
+                comparator=shape.comparator,
+                value=shape.threshold,
+            ),
+            OperationStep(kind=OperationKind.COUNT, field=shape.field),
+            OperationStep(kind=OperationKind.LIST, field=shape.field),
+        ]
+    if shape.shape == QuestionShape.EXTREMUM:
+        return [
+            OperationStep(
+                kind=(
+                    OperationKind.ARGMIN
+                    if shape.direction == "min"
+                    else OperationKind.ARGMAX
+                ),
+                field=shape.field,
+            )
+        ]
+    return None
+
+
 def _operation_steps(
     question: str,
     category: str,
     target: str,
     document: CompiledDocument | None = None,
+    shape: ShapePlan | None = None,
 ) -> list[OperationStep]:
+    routed = _shaped_steps(shape) if shape is not None else None
+    if routed is not None:
+        return routed
     folded = question.casefold()
     threshold = _threshold(question)
     steps: list[OperationStep] = []
@@ -201,17 +242,15 @@ def _operation_steps(
             "latest",
         )
     )
-    entity_count_nouns = (
-        "how many projects",
-        "how many stations",
-        "how many parks",
-        "how many countries",
-        "how many entries",
-        "how many items",
-        "how many figures",
-    )
+    # "How many <entities>" counts records. What that noun is comes from the
+    # document's own label for its records, plus the words any question uses
+    # for rows of a table.
+    entity_nouns = {"entries", "entry", "items", "records", "figures"}
+    label = (document.entity_label if document else "").casefold()
+    if label:
+        entity_nouns |= {label, f"{label}s"}
     is_count = folded.startswith("counting ") or any(
-        phrase in folded for phrase in entity_count_nouns
+        f"how many {noun}" in folded for noun in entity_nouns
     ) or (
         "how many" in folded
         and "by how many" not in folded
@@ -239,8 +278,11 @@ def _operation_steps(
         if "name" in folded or "list" in folded:
             steps.append(OperationStep(kind=OperationKind.LIST, field=target))
     elif has_superlative and target:
+        # "Oldest" reverses on what is measured: the oldest thing has the
+        # smallest founding year but the largest age, so read it off the
+        # values rather than off the field's name.
         minimum = any(term in folded for term in ("lowest", "earliest")) or (
-            "oldest" in folded and target == "establishment_year"
+            "oldest" in folded and _records_years(document, target)
         )
         steps.append(OperationStep(
             kind=OperationKind.ARGMIN if minimum else OperationKind.ARGMAX,
@@ -342,14 +384,36 @@ def _structured_metadata(
 def compile_question(
     question: QuestionRequest,
     document: CompiledDocument | None = None,
+    bound_field: str | None = None,
+    shape_plan: ShapePlan | None = None,
 ) -> V3QuestionPlan:
-    """Compile a question into a validated strategy and operation sequence."""
+    """Compile a question into a validated strategy and operation sequence.
+
+    bound_field carries the verdict of a caller that resolved the question
+    against the document's own field list. An empty verdict is a real answer —
+    the document reports no such measurement — and must stand, because naming
+    some field anyway sends every later stage looking for the wrong column.
+    Only None means nothing decided, leaving wording to guess.
+    """
     category = _normalize_category(question.category)
     folded = question.question.casefold()
-    target = _target_field(question.question, document)
+    shape = shape_plan or ShapePlan()
+    # A routed shape names the field it measures, which is the same verdict a
+    # binder reaches and one made together with the operation it feeds.
+    target = (
+        shape.field
+        if shape.routes and shape.field
+        else (
+            _target_field(question.question, document)
+            if bound_field is None
+            else bound_field
+        )
+    )
     if not target and "ranked" in folded and "group" in folded:
         target = "rank"
-    operations = _operation_steps(question.question, category, target, document)
+    operations = _operation_steps(
+        question.question, category, target, document, shape
+    )
 
     if category == "absence" or any(
         term in folded for term in ("never mentioned", "never raised", "never substantively")
@@ -397,11 +461,23 @@ def compile_question(
         ),
         entity_hints=_entity_hints(question.question, document),
         metadata=_structured_metadata(question.question, operations, target),
+        shape_plan=shape,
     )
 
 
 def compile_questions(
     questions: list[QuestionRequest],
     document: CompiledDocument | None = None,
+    bindings: dict[str, str] | None = None,
+    shapes: dict[str, ShapePlan] | None = None,
 ) -> list[V3QuestionPlan]:
-    return [compile_question(question, document) for question in questions]
+    routed = shapes or {}
+    return [
+        compile_question(
+            question,
+            document,
+            None if bindings is None else bindings.get(question.question_id, ""),
+            routed.get(question.question_id),
+        )
+        for question in questions
+    ]

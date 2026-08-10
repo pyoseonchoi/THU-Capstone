@@ -106,12 +106,17 @@ def _station_pages() -> list[DocumentPage]:
     return pages
 
 
-def _plan(question_id: str, question: str, category: str):
-    return compile_question(QuestionRequest(
-        question_id=question_id,
-        question=question,
-        category=category,
-    ))
+def _plan(question_id: str, question: str, category: str, document=None):
+    # Fields are named by the document, so a plan can only target one when it
+    # is compiled against that document.
+    return compile_question(
+        QuestionRequest(
+            question_id=question_id,
+            question=question,
+            category=category,
+        ),
+        document if document is not None else compile_document("doc", _station_pages()),
+    )
 
 
 def test_generic_compiler_builds_trusted_registry_and_mixed_number_cards():
@@ -135,11 +140,13 @@ def test_generic_compiler_builds_trusted_registry_and_mixed_number_cards():
         "Demeria",
     ]
     for record in document.records:
+        # Field identity comes from the document's own wording now, so the
+        # names below are the station cards' labels rather than a fixed schema.
         assert {fact.field for fact in record.number_facts} == {
-            "area",
-            "highest_point",
-            "annual_visitors",
-            "establishment_year",
+            "area_monitored",
+            "highest_operating_point",
+            "annual_visiting_researchers",
+            "year_established",
         }
 
 
@@ -193,7 +200,7 @@ def test_question_compiler_emits_composed_operations_without_count_confusion():
         OperationKind.COUNT,
         OperationKind.LIST,
     ]
-    assert threshold.target_fields == ["highest_point"]
+    assert threshold.target_fields == ["highest_operating_point"]
     assert [step.kind for step in superlative.operations] == [OperationKind.ARGMAX]
     assert [step.kind for step in filtered.operations] == [
         OperationKind.FILTER,

@@ -41,6 +41,7 @@ from app.submission import IncrementalSubmissionWriter
 from app.v3.answerer import V3Answerer
 from app.v3.compiler import COMPILER_VERSION, all_mapping_records, compile_document
 from app.v3.exhaustive_mapper import ExhaustiveMapper
+from app.v3.field_binder import FieldBinder
 from app.v3.models import (
     CompiledDocument,
     CompiledRecord,
@@ -51,17 +52,77 @@ from app.v3.models import (
     V3QuestionPlan,
 )
 from app.v3.question_compiler import compile_questions
+from app.v3.record_profiler import RecordProfiler
 from app.v3.reducers import (
     build_evidence_packet,
     reduce_absence,
     reduce_mapped_structure,
     status_counts,
 )
+from app.v3.shape_classifier import ShapeClassifier
 from app.v3.structure_augmenter import StructureAugmenter
 from app.v3.structured_executor import execute_structured
 
 logger = get_logger("pipeline.v3")
 ProgressCallback = Callable[[str, int, int, int], None]
+# How many of a question's distinctive words a dismissed record must carry
+# before the scan's verdict on it is worth a second reading.
+_MIN_DISMISSED_TERMS = 2
+# A word carried by more than this share of records cannot single one out.
+_MAX_TERM_SHARE = 0.25
+_QUESTION_STOPWORDS = frozenset({
+    "about", "across", "after", "among", "according", "book", "chapter",
+    "does", "each", "from", "give", "guide", "have", "into", "report",
+    "state", "that", "their", "these", "they", "this", "what", "when",
+    "where", "which", "with", "year", "entries", "entry", "every", "name",
+    "many", "much", "over", "same", "some", "there", "those", "were",
+})
+
+
+def _weighted_phrases(
+    terms: list[str],
+    records: list[CompiledRecord],
+) -> list[tuple[str, int]]:
+    """Weigh the router's wording by how far it narrows the document.
+
+    "First ascent" appears in two chapters and points at them; "highest"
+    appears in most and points almost nowhere. Dropping the common wording
+    would lose the only reach some questions have, so it is kept and counted
+    for less than the wording that singles a record out.
+    """
+    folded = [record.text.casefold() for record in records]
+    ceiling = max(1, len(folded) * _MAX_TERM_SHARE)
+    weighted: list[tuple[str, int]] = []
+    for phrase in (term.casefold() for term in terms if len(term) >= 4):
+        reach = sum(phrase in text for text in folded)
+        if not reach:
+            continue
+        weighted.append((phrase, _MIN_DISMISSED_TERMS if reach <= ceiling else 1))
+    return weighted
+
+
+def _distinctive_terms(text: str, records: list[CompiledRecord]) -> set[str]:
+    """Return the question's words that could locate it within this document.
+
+    A word most records carry says nothing about which record answers the
+    question: in a book of parks, "park" is in every chapter. Only the words
+    that are rare across the document can single a record out, and which words
+    those are is a property of the document rather than of the subject.
+    """
+    words = {
+        term
+        for term in re.findall(r"[a-z0-9]+", text.casefold())
+        if len(term) >= 4 and term not in _QUESTION_STOPWORDS
+    }
+    if not records:
+        return words
+    ceiling = max(1, len(records) * _MAX_TERM_SHARE)
+    folded = [record.text.casefold() for record in records]
+    return {
+        term
+        for term in words
+        if sum(term in text for text in folded) <= ceiling
+    }
 
 
 class FullScanPipeline:
@@ -83,6 +144,9 @@ class FullScanPipeline:
         self._mapper = ExhaustiveMapper(self._router, self._tracker, settings)
         self._answerer = V3Answerer(self._router, self._tracker)
         self._augmenter = StructureAugmenter(self._router, self._tracker, settings)
+        self._profiler = RecordProfiler(self._router, self._tracker, settings)
+        self._binder = FieldBinder(self._router, self._tracker, settings)
+        self._shaper = ShapeClassifier(self._router, self._tracker, settings)
         self._store = RunStore(settings)
 
     async def process_document(
@@ -103,6 +167,7 @@ class FullScanPipeline:
         save_parsed_output(metadata, pages, self._settings.parsed_dir)
         compiled = compile_document(metadata.document_id, pages)
         compiled = await self._augmenter.augment(compiled)
+        compiled = await self._profiler.profile(compiled)
         records = all_mapping_records(compiled)
         chunks = [
             self._record_chunk(metadata.document_id, index, record)
@@ -190,6 +255,7 @@ class FullScanPipeline:
         if compiled is None:
             return None
         compiled = await self._augmenter.augment(compiled)
+        compiled = await self._profiler.profile(compiled)
         self._store.save_compiled_document(compiled)
         return compiled
 
@@ -211,6 +277,9 @@ class FullScanPipeline:
             self._tracker,
             self._settings,
         )
+        self._profiler = RecordProfiler(self._router, self._tracker, self._settings)
+        self._binder = FieldBinder(self._router, self._tracker, self._settings)
+        self._shaper = ShapeClassifier(self._router, self._tracker, self._settings)
         started = time.perf_counter()
         run = PipelineRun(
             document_id=document_id,
@@ -233,7 +302,9 @@ class FullScanPipeline:
 
         records = all_mapping_records(compiled)
         expected_record_ids = {record.record_id for record in records}
-        plans = compile_questions(questions, compiled)
+        shapes = await self._shaper.classify(questions, compiled)
+        bindings = await self._binder.bind(questions, compiled)
+        plans = compile_questions(questions, compiled, bindings, shapes)
         deterministic: dict[str, ExecutionResult] = {}
         unresolved: list[V3QuestionPlan] = []
         if progress_callback:
@@ -330,14 +401,28 @@ class FullScanPipeline:
         expected_record_ids: set[str],
         compiled: CompiledDocument,
     ) -> tuple[ExecutionResult, list[V3MapResult]]:
-        result = self._reduced_result(plan, question_results, expected_record_ids)
+        result = self._reduced_result(
+            plan,
+            question_results,
+            expected_record_ids,
+            compiled,
+        )
 
         if result is not None:
             return result, question_results
         packet = build_evidence_packet(plan, question_results, expected_record_ids)
-        should_repair = self._evidence_needs_repair(plan, packet)
+        dismissed = self._dismissed_matches(plan, compiled, question_results)
+        should_repair = self._evidence_needs_repair(plan, packet) or bool(dismissed)
         if should_repair:
-            selected = self._lexical_repair_records(plan, compiled)
+            # Both selections answer different questions — which records the
+            # scan dismissed, and which records the question's words point at
+            # — so revisiting only one of them narrows what repair can find.
+            selected = list(
+                {
+                    record.record_id: record
+                    for record in [*dismissed, *self._lexical_repair_records(plan, compiled)]
+                }.values()
+            )[:8]
             repaired = await self._mapper.map_selected_records(
                 compiled,
                 selected,
@@ -367,6 +452,7 @@ class FullScanPipeline:
                     plan,
                     question_results,
                     expected_record_ids,
+                    compiled,
                 )
                 if result is not None:
                     return result, question_results
@@ -376,6 +462,54 @@ class FullScanPipeline:
                     expected_record_ids,
                 )
         return await self._answerer.generate(plan, packet), question_results
+
+    @staticmethod
+    def _dismissed_matches(
+        plan: V3QuestionPlan,
+        compiled: CompiledDocument,
+        results: list[V3MapResult],
+        *,
+        limit: int = 4,
+    ) -> list[CompiledRecord]:
+        """Return records the scan dismissed although they answer its terms.
+
+        A question that needs several pieces of evidence is only as good as
+        the records the scan admits, and a small model reading a long record
+        misses figures it plainly states. Where a cheap word match and the
+        scan's verdict disagree — the record carries the question's own
+        distinctive terms, yet came back with nothing — the verdict is the
+        side more likely to be wrong, so those records are read again by the
+        stronger model. Every record is still scanned first; this only revisits.
+        """
+        if plan.strategy == Strategy.ABSENCE_MATRIX:
+            return []
+        empty = {
+            result.record_id
+            for result in results
+            if result.question_id == plan.question_id and result.status == "no_evidence"
+        }
+        if not empty:
+            return []
+        records = all_mapping_records(compiled)
+        wanted = _distinctive_terms(plan.question, records)
+        # The router read the question and offered the wording a document
+        # would use for what it asks about. A chapter that says "crosses into
+        # Kaliningrad" shares no rare word with a question about international
+        # borders, and only that wording can reach it.
+        phrases = _weighted_phrases(plan.shape_plan.search_terms, records)
+        if len(wanted) < 2 and not phrases:
+            return []
+        scored: list[tuple[int, CompiledRecord]] = []
+        for record in records:
+            if record.record_id not in empty:
+                continue
+            folded = record.text.casefold()
+            matched = sum(term in folded for term in wanted)
+            matched += sum(weight for phrase, weight in phrases if phrase in folded)
+            if matched >= _MIN_DISMISSED_TERMS:
+                scored.append((matched, record))
+        scored.sort(key=lambda item: (-item[0], item[1].ordinal))
+        return [record for _, record in scored[:limit]]
 
     @staticmethod
     def _evidence_needs_repair(plan: V3QuestionPlan, packet: EvidencePacket) -> bool:
@@ -433,17 +567,24 @@ class FullScanPipeline:
         plan: V3QuestionPlan,
         question_results: list[V3MapResult],
         expected_record_ids: set[str],
+        compiled: CompiledDocument | None = None,
     ) -> ExecutionResult | None:
         if plan.strategy == Strategy.ABSENCE_MATRIX:
-            result = reduce_absence(plan, question_results, expected_record_ids)
+            result = reduce_absence(
+                plan,
+                question_results,
+                expected_record_ids,
+                document=compiled,
+            )
             return result or reduce_absence(
                 plan,
                 question_results,
                 expected_record_ids,
                 allow_partial=True,
+                document=compiled,
             )
         packet = build_evidence_packet(plan, question_results, expected_record_ids)
-        return reduce_mapped_structure(plan, packet)
+        return reduce_mapped_structure(plan, packet, compiled)
 
     @staticmethod
     def _lexical_repair_records(

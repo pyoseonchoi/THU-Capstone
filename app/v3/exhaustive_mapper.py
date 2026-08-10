@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import html
 import json
 import re
-import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
@@ -26,6 +24,7 @@ from app.v3.models import (
     V3MapResult,
     V3QuestionPlan,
 )
+from app.v3.source_text import json_payload, normalize_source
 
 logger = get_logger("v3.exhaustive_mapper")
 
@@ -72,20 +71,7 @@ def _pack_records(
     return batches
 
 
-def _normalize_source(text: str) -> str:
-    translations = str.maketrans(
-        {
-            "\u2018": "'",
-            "\u2019": "'",
-            "\u201c": '"',
-            "\u201d": '"',
-            "\u2013": "-",
-            "\u2014": "-",
-            "\u00a0": " ",
-        }
-    )
-    normalized = unicodedata.normalize("NFKC", html.unescape(text)).translate(translations)
-    return re.sub(r"\s+", " ", normalized).strip().casefold()
+_normalize_source = normalize_source
 
 
 def _canonical_quote(record: CompiledRecord, quote: str) -> tuple[str, int] | None:
@@ -130,18 +116,7 @@ def _topic_key(topic: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", _normalize_source(topic))
 
 
-def _json_payload(raw: str) -> Any:
-    text = raw.strip()
-    if "```" in text:
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
-        if not match:
-            raise
-        return json.loads(match.group(1))
+_json_payload = json_payload
 
 
 def _bounded_confidence(value: object) -> float:

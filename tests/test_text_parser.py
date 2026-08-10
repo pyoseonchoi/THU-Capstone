@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from app.exceptions import DocumentParseError
-from app.parsing.structure_detector import detect_sections
 from app.parsing.text_parser import (
     normalize_text_source,
     parse_text,
@@ -60,13 +59,12 @@ def test_parse_escaped_docling_page_markers(tmp_path):
     )
 
     metadata, pages = parse_text(path)
-    sections = detect_sections(pages)
 
     assert metadata.page_count == 2
     assert [page.page_number for page in pages] == [1, 2]
     assert "\n" in pages[0].text
     assert "\\n" not in pages[0].text
-    assert sections[0].title == "First Park"
+    assert "## First Park" in pages[0].text
 
 
 def test_normal_text_backslashes_are_not_decoded():

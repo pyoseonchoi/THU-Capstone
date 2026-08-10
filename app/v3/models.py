@@ -109,7 +109,7 @@ class CompiledDocument(BaseModel):
     """Question-independent representation produced once per upload."""
 
     document_id: str
-    compiler_version: str = "v3.2"
+    compiler_version: str = "v3.4"
     record_kind: str = "segments"
     entity_label: str = "record"
     records: list[CompiledRecord] = Field(default_factory=list)
@@ -120,10 +120,13 @@ class CompiledDocument(BaseModel):
     contents_pages: list[int] = Field(default_factory=list)
     contents_trusted: bool = False
     field_catalog: list[str] = Field(default_factory=list)
+    # Records a model read in full. For these, a missing metric means the
+    # record does not report it, rather than that parsing failed.
+    profiled_records: list[str] = Field(default_factory=list)
     unassigned_text: str = ""
     page_count: int = 0
     registry_trusted: bool = False
-    registry_signals: dict[str, int] = Field(default_factory=dict)
+    registry_signals: dict[str, int | str] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -166,6 +169,58 @@ class V3MapResult(BaseModel):
     error: str = ""
 
 
+class QuestionShape(str, enum.Enum):
+    """What a question asks the compiled registry to do.
+
+    These are the operations the deterministic executors already implement,
+    named so a model can route a question to one instead of the executors
+    recognising the phrasings one evaluation happened to use.
+    """
+
+    COUNT_ENTITIES = "count_entities"
+    COUNT_BY_THRESHOLD = "count_by_threshold"
+    EXTREMUM = "extremum"
+    UNIT_OUTLIER = "unit_outlier"
+    CLAIM_CONFLICT = "claim_conflict"
+    RELATION = "relation"
+    DATED_EVENT = "dated_event"
+    ABSENCE = "absence"
+    CONTENTS_INDEX = "contents_index"
+    SYNTHESIS = "synthesis"
+
+
+class ShapePlan(BaseModel):
+    """The shape of a question and the arguments that shape needs."""
+
+    shape: QuestionShape = QuestionShape.SYNTHESIS
+    # The compiled field whose values the question measures.
+    field: str = ""
+    # Registry group values the question names, in the order it names them.
+    groups: list[str] = Field(default_factory=list)
+    # Threshold filter for COUNT_BY_THRESHOLD.
+    comparator: str = ""
+    threshold: float | None = None
+    # Which end of the range EXTREMUM wants.
+    direction: str = ""
+    # The population a ranking claim covers, copied from the question.
+    claim_scope: str = ""
+    # What a DATED_EVENT question asks about, and whose event it is.
+    event: str = ""
+    subject: str = ""
+    # Words a document would use for what the question asks about, which need
+    # not be the question's own words. A question about an international
+    # border reaches a chapter that says "crosses into Kaliningrad" only
+    # through wording like this.
+    search_terms: list[str] = Field(default_factory=list)
+    # Whether the model was sure enough for Python to act on this.
+    confident: bool = False
+
+    @property
+    def routes(self) -> bool:
+        """Whether this plan may drive a deterministic executor."""
+        return self.confident and self.shape != QuestionShape.SYNTHESIS
+
+
 class V3QuestionPlan(BaseModel):
     """Small, answer-oriented plan with no free-form arithmetic operator."""
 
@@ -179,6 +234,7 @@ class V3QuestionPlan(BaseModel):
     target_fields: list[str] = Field(default_factory=list)
     entity_hints: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    shape_plan: ShapePlan = Field(default_factory=ShapePlan)
 
 
 class ExecutionResult(BaseModel):

@@ -6,18 +6,28 @@ import re
 from collections import defaultdict
 
 from app.schemas import DocumentPage
+from app.v3.flat_table import parse_flat_table
 from app.v3.models import CompiledTable, CompiledTableRow, ContentsEntry
 
 _TABLE_MARKER_RE = re.compile(r"\bT\s*A\s*B\s*L\s*E\s+(?P<number>\d{1,3})\b", re.I)
+# A section heading is set in capitals. The same word inside a sentence —
+# "Additional figures and tables" — is not a heading, and reading it as one
+# splits the list it belongs to.
 _CONTENTS_GROUP_RE = re.compile(
     r"\b(?P<group>B\s*O\s*X\s*E\s*S|S\s*P\s*O\s*T\s*L\s*I\s*G\s*H\s*T\s*S|"
     r"F\s*I\s*G\s*U\s*R\s*E\s*S|T\s*A\s*B\s*L\s*E\s*S)\b",
-    re.I,
 )
+# A contents list may or may not close its numbering with a full stop —
+# "3.1 Title 156" and "3.1. Title 156" are the same list written two ways.
 _CONTENTS_ENTRY_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?P<identifier>(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\s+"
-    r"(?P<title>.+?)\s+(?P<page>\d{1,3})(?=\s+(?:(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\s+|$)",
+    r"(?<![A-Za-z0-9])(?P<identifier>(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\.?\s+"
+    r"(?P<title>.+?)\s+(?P<page>\d{1,3})"
+    r"(?=\s+(?:[A-Za-z]{3,12}\s+)?(?:(?:[OS]\.)?S?\d+(?:\.\d+){1,3})\.?\s+|$)",
     re.I | re.S,
+)
+_CONTENTS_HEADING_RE = re.compile(
+    r"^[\s\W\d]{0,24}?(?:table\s+of\s+)?contents\b",
+    re.IGNORECASE,
 )
 _CONTENTS_IDENTIFIER = (
     r"(?:[OS]\.\d+(?:\.\d+){0,2}|S?\d+(?:\.\d+){1,3})"
@@ -32,7 +42,9 @@ _HDI_ROW_START_RE = re.compile(
     r"(?P<label>[A-Z][^\d]+?)\s+(?P<hdi>0\.\d{3})(?=\s)",
 )
 _HDI_COMPONENT_RE = re.compile(
-    r"^\s*(?P<life>\d{2,3}\.\d|\.\.)\s+"
+    # Every component may carry a footnote letter, including the first: a
+    # marker there otherwise fails the whole row and drops its every value.
+    r"^\s*(?P<life>\d{2,3}\.\d|\.\.)(?:\s+[a-z])?\s+"
     r"(?P<expected>\d{1,2}\.\d|\.\.)(?:\s+[a-z])?\s+"
     r"(?P<mean>\d{1,2}\.\d|\.\.)(?:\s+[a-z])?\s+"
     r"(?P<gni>\d{1,3}(?:,\d{3})+|\.\.)(?:\s+[a-z])?\b",
@@ -259,15 +271,80 @@ def compile_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
     return tables
 
 
+_FLAT_CAPTION_RE = re.compile(
+    r"(?P<caption>(?:Annex\s+)?Table\s+(?P<number>\d{1,3})(?:\.[A-Za-z0-9]+)*\.)\s+",
+)
+
+
+def compile_flat_tables(pages: list[DocumentPage]) -> list[CompiledTable]:
+    """Compile tables whose layout conversion replaced with running text.
+
+    The run-based reader looks for a page whose top announces a table. A
+    report that numbers its tables inside a chapter puts the caption wherever
+    the text reaches it, so these are found by scanning for the caption and
+    reading what follows it.
+    """
+    tables: list[CompiledTable] = []
+    seen: set[str] = set()
+    for page in pages:
+        for match in _FLAT_CAPTION_RE.finditer(page.text):
+            names, parsed = parse_flat_table(page.text[match.end():])
+            if not parsed:
+                continue
+            caption = match.group("caption").strip().rstrip(".")
+            if caption in seen:
+                continue
+            seen.add(caption)
+            columns = names[1:]
+            rows = [
+                CompiledTableRow(
+                    row_id=f"{caption}-r{index}".replace(" ", "-").casefold(),
+                    label=label,
+                    page=page.page_number,
+                    values={
+                        column: value
+                        for column, value in zip(columns, values)
+                        if value is not None
+                    },
+                    quote=f"{label} " + " ".join(
+                        f"{value:g}" for value in values if value is not None
+                    ),
+                )
+                for index, (label, values) in enumerate(parsed, start=1)
+            ]
+            unique = len({row.label.casefold() for row in rows}) == len(rows)
+            tables.append(CompiledTable(
+                table_id=caption.replace(" ", "-").casefold(),
+                number=int(match.group("number")),
+                title=f"{caption} {_flat_title(page.text[match.end():])}".strip(),
+                page_start=page.page_number,
+                page_end=page.page_number,
+                columns=[names[0], *columns],
+                rows=rows,
+                raw_text=page.text[match.start(): match.end() + 2000],
+                trusted=unique,
+                warnings=[] if unique else ["Flattened table rows repeat a label"],
+            ))
+    return tables
+
+
+def _flat_title(body: str) -> str:
+    """Return the caption's own title, which precedes the column headings."""
+    return re.split(r"(?<=[a-z.)])\s+(?=[A-Z])", body.strip())[0][:90].strip()
+
+
 def compile_contents(
     pages: list[DocumentPage],
 ) -> tuple[str, list[int], list[ContentsEntry], bool]:
     """Preserve the contents range and parse straightforward single-column lists."""
+    # The heading opens the page but need not be its first characters: a
+    # running folio, a page number, and the words "Table of" all come before
+    # it in documents that are otherwise laid out the same way.
     start_index = next(
         (
             index
             for index, page in enumerate(pages)
-            if re.match(r"^\s*contents\b", page.text, re.I)
+            if _CONTENTS_HEADING_RE.match(page.text)
         ),
         None,
     )

@@ -11,41 +11,108 @@ from app.v3.models import (
     ExecutionResult,
     NumberFact,
     OperationKind,
+    QuestionShape,
     V3QuestionPlan,
 )
 
-_COUNTRY_NAMES = (
-    "Albania",
-    "Austria",
-    "Bulgaria",
-    "Croatia",
-    "Denmark",
-    "England",
-    "Estonia",
-    "Finland",
-    "France",
-    "Germany",
-    "Greece",
-    "Hungary",
-    "Iceland",
-    "Ireland",
-    "Italy",
-    "Latvia",
-    "Lithuania",
-    "Montenegro",
-    "Norway",
-    "Poland",
-    "Portugal",
-    "Romania",
-    "Scotland",
-    "Slovakia",
-    "Slovenia",
-    "Spain",
-    "Sweden",
-    "Switzerland",
-    "Ukraine",
-    "Wales",
+# Function words carry no part of what a phrase names.
+_PHRASE_STOPWORDS = frozenset({"the", "and", "for", "its", "was", "with", "from"})
+_SUPERLATIVE_WORDS = (
+    "highest", "largest", "oldest", "tallest", "biggest", "smallest",
+    "deepest", "longest", "widest", "youngest", "newest", "first",
 )
+# A possessive right before a superlative names what it boasts about, in any
+# document: "Norway's largest", "Britain's second-highest", "the world's
+# largest". This is how the boast names its own scope without help from a
+# fixed list of place names.
+_POSSESSIVE_CLAIM_RE = re.compile(
+    r"\b([a-z][\w'-]*)'s\s+(?:\w+-)?(" + "|".join(_SUPERLATIVE_WORDS) + r")\b"
+)
+# A rate or a share is never what "largest" or "highest" means unless the
+# claim itself is about one; without that check a field like "highest
+# recorded wind speed" can outscore the field the claim is actually about
+# purely because both labels contain the word "highest".
+_RATE_UNIT_RE = re.compile(r"/|\bper\b|%")
+# Scope words with no boundary at all — "the world's largest" has nothing
+# narrower to compare against than the whole registry. A named region that is
+# not literally unbounded ("Britain", "Scandinavia") is not in this set: the
+# registry has no group that is known to be exactly that population.
+_UNIVERSAL_SCOPES = frozenset({
+    "world", "earth", "planet", "globe", "global", "universe",
+})
+_NEGATION_WORDS = ("not ", "n't", "never ", "without ", "no longer", "one of ", "among ")
+
+
+_PARTITIVE_OBJECT_RE = re.compile(r"^\s*\w+\s+of\b")
+_PLURAL_OBJECT_RE = re.compile(r"^\s*(\w+s)\b")
+
+
+def _is_partitive_claim(sentence: str, span_end: int) -> bool:
+    """Whether the noun right after a superlative belongs to something else.
+
+    "The world's largest colony of seagulls" and "Europe's largest gull
+    colonies" both state the size of a feature the record merely contains,
+    not of the record itself: one names it with an explicit "of", the other
+    with a plain plural ("colonies", not "colony"). "Norway's largest
+    national park" and "Britain's second-highest peak" name neither — a
+    record boasts about itself in the singular, once, not about a population
+    of the things it holds.
+    """
+    tail = sentence[span_end : span_end + 30]
+    if _PARTITIVE_OBJECT_RE.match(tail):
+        return True
+    plural = _PLURAL_OBJECT_RE.match(tail)
+    return bool(plural) and plural.group(1) not in {"its", "this"}
+
+
+def _find_possessive_claim(text: str, requested_claim: str) -> re.Match | None:
+    """Return the possessive-superlative match this claim type is about.
+
+    A sentence can carry more than one boast — "Greece's first marine park
+    and Europe's largest protected area" — and taking whichever comes first
+    would read the wrong claim's scope onto the question actually asked.
+    Where the question names which superlative it means, only a match on
+    that word is considered.
+    """
+    matches = list(_POSSESSIVE_CLAIM_RE.finditer(text))
+    if not requested_claim:
+        return matches[0] if matches else None
+    # Once the question names its superlative, only a match on that same
+    # word counts — falling back to a different one here is how "Scotland's
+    # oldest national park" answered a question about the largest, and how
+    # "Scotland's largest city" (a claim about a city, not the park) did too.
+    return next((match for match in matches if match.group(2) == requested_claim), None)
+
+
+def _claim_names_the_entity(sentence: str, span_end: int, entity_label: str) -> bool:
+    """Whether a bare possessive superlative, with no other marker, names the
+    record's own kind of subject rather than something it merely contains.
+
+    Without an explicit "calls"/"described as" marker elsewhere in the
+    sentence, a possessive superlative on its own is trusted only when its
+    object is the kind of thing the registry actually catalogues — a park, a
+    station, whatever entity_label names — since a marker-free superlative
+    about anything else (a colony, a wind speed, a waterfall) describes a
+    feature the record contains at least as often as it boasts about the
+    record itself.
+    """
+    if not entity_label:
+        return True
+    return entity_label.casefold() in sentence[span_end : span_end + 40]
+
+
+def _is_negated(sentence: str) -> bool:
+    """Whether a sentence hedges or denies the superlative it contains.
+
+    "Europe's largest parks" inside "may not be one of Europe's largest
+    parks" states the opposite of a claim, and "one of Europe's largest"
+    does not claim first place at all — either way a substring match alone
+    cannot tell a real boast from this, and answering as though the record
+    claimed what it only hedged or denied invents a contradiction where the
+    text states none.
+    """
+    folded = sentence.casefold()
+    return any(word in folded for word in _NEGATION_WORDS)
 
 
 def _facts(document: CompiledDocument, field: str) -> list[tuple[CompiledRecord, NumberFact]]:
@@ -57,6 +124,112 @@ def _facts(document: CompiledDocument, field: str) -> list[tuple[CompiledRecord,
     ]
 
 
+def _metric_phrase(field: str, fact: NumberFact) -> str:
+    """Name a measurement the way the document names it.
+
+    The label carries the document's own wording, minus the part naming what
+    was measured in this record and the parenthetical unit, so one record's
+    subject never leaks into a sentence about the whole registry.
+    """
+    label = re.sub(r"\([^)]*\)", "", (fact.label or "").split(":", 1)[0]).strip()
+    phrase = (label or field.replace("_", " ")).casefold()
+    # A label may already carry the superlative the sentence is about to add,
+    # which would read "the highest highest crest".
+    return re.sub(
+        r"^(?:highest|lowest|largest|smallest|greatest|maximum|minimum|max|min)\s+",
+        "",
+        phrase,
+    )
+
+
+def _content_words(phrase: str) -> set[str]:
+    """Return the words of a phrase that carry its meaning."""
+    return {
+        word
+        for word in re.findall(r"[^\W\d_]{3,}", phrase.casefold())
+        if word not in _PHRASE_STOPWORDS
+    }
+
+
+def _label_covers(label: str, phrase: str, wanted: set[str]) -> bool:
+    """Whether a document label names the same thing as a phrase."""
+    folded = label.casefold()
+    if phrase in folded:
+        return True
+    return bool(wanted) and wanted <= _content_words(folded)
+
+
+def _year_field(document: CompiledDocument) -> str:
+    """Return the field whose values the document states as calendar years.
+
+    Which field records a founding date is a property of the values, not of
+    what the document happens to call the column.
+    """
+    coverage: dict[str, list[float]] = {}
+    for record in document.records:
+        for fact in record.number_facts:
+            coverage.setdefault(fact.field, []).append(fact.value)
+    yearly = [
+        (field, values)
+        for field, values in coverage.items()
+        if values and all(1000 <= value <= 2100 for value in values)
+    ]
+    if not yearly:
+        return ""
+    return max(yearly, key=lambda item: (len(item[1]), item[0]))[0]
+
+
+def _extreme_word(argmin: bool, candidates: list[tuple[CompiledRecord, NumberFact]]) -> str:
+    """Say which end of the range was taken, in terms that fit the values."""
+    values = [fact.value for _, fact in candidates]
+    if values and all(1000 <= value <= 2100 for value in values):
+        return "earliest" if argmin else "latest"
+    return "lowest" if argmin else "highest"
+
+
+_AREA_UNIT_RE = re.compile(r"\bsq\b|square|²|\bha\b|hectare|acre", re.IGNORECASE)
+
+
+def _same_dimension(one: str, other: str) -> bool:
+    """Report whether two units measure the same kind of quantity.
+
+    A question about a value "reported in different units" means the same
+    quantity written another way, such as an area in square miles beside
+    areas in square kilometres. A length sitting in an area column is not a
+    unit choice; it is a misread, and answering with it names the wrong
+    record with full confidence.
+    """
+    return bool(_AREA_UNIT_RE.search(one)) == bool(_AREA_UNIT_RE.search(other))
+
+
+def _has_mixed_area_units(candidates: list[tuple[CompiledRecord, NumberFact]]) -> bool:
+    """Report whether the rows state areas in more than one unit."""
+    units = {fact.unit.casefold() for _, fact in candidates if fact.unit}
+    return len(units) > 1 and any("sq" in unit for unit in units)
+
+
+def _complete_facts(
+    document: CompiledDocument,
+    field: str,
+) -> list[tuple[CompiledRecord, NumberFact]] | None:
+    """Return typed facts only when the registry parsed completely.
+
+    A count or extremum is only sound when the field is bound for every
+    record: the true extremum may sit in a record the parser missed, and no
+    weaker signal distinguishes "this record omits the metric" from "the
+    metric is recorded under wording we did not bind here". Anything short of
+    full coverage falls through to the exhaustive mapper, which reads every
+    record instead of guessing from the rows that happened to parse.
+    """
+    candidates = _facts(document, field)
+    if not candidates:
+        return None
+    holders = {record.record_id for record, _ in candidates}
+    if holders != {record.record_id for record in document.records}:
+        return None
+    return candidates
+
+
 def _area_km2(fact: NumberFact) -> float:
     return fact.value * 2.58999 if fact.unit == "sq miles" else fact.value
 
@@ -65,19 +238,35 @@ def _format_number(value: float) -> str:
     return f"{value:,.0f}" if value.is_integer() else f"{value:,.2f}".rstrip("0")
 
 
+def _written_value(fact) -> str:
+    """Write a figure the way a reader reads it, never in exponent form.
+
+    A value scaled up from its printed form — "15" under a heading that says
+    millions — keeps a raw text that no longer matches it, and str() on the
+    scaled number reaches for scientific notation.
+    """
+    raw = (fact.raw_value or "").strip()
+    if raw and "e" not in raw.casefold():
+        try:
+            if abs(float(raw.replace(",", "")) - fact.value) < 1e-9:
+                return raw
+        except ValueError:
+            return raw
+    return _format_number(fact.value)
+
+
 def _country_mentions(
     question: str,
     document: CompiledDocument | None = None,
 ) -> list[str]:
+    """Return the registry's own group values that the question names."""
+    if document is None:
+        return []
     folded = question.casefold()
-    candidates = list(_COUNTRY_NAMES)
-    if document is not None:
-        candidates.extend(record.country for record in document.records if record.country)
-    return [
-        country
-        for country in dict.fromkeys(candidates)
-        if country.casefold() in folded
-    ]
+    groups = dict.fromkeys(
+        record.country for record in document.records if record.country
+    )
+    return [group for group in groups if group.casefold() in folded]
 
 
 def _fact_evidence(record: CompiledRecord, fact: NumberFact) -> str:
@@ -114,428 +303,77 @@ def _page_with(record: CompiledRecord, *terms: str) -> int:
     return record.page_start
 
 
-def _cross_border_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "international border" not in folded or not any(
-        term in folded for term in ("extend across", "paired across", "shared")
-    ):
+
+
+
+def _source_table(plan: V3QuestionPlan, document: CompiledDocument):
+    """Return the compiled table a question is asking about.
+
+    A question may say which table it means. Where it does not, the field it
+    was bound to does: a column belonging to exactly one trusted table names
+    that table as surely as its number would, and a column shared by several
+    names none of them.
+    """
+    trusted = [table for table in document.tables if table.trusted and table.rows]
+    number = plan.metadata.get("source_table_number")
+    if number is not None:
+        return next(
+            (table for table in trusted if table.number == int(number)),
+            None,
+        )
+    target = plan.target_fields[0] if plan.target_fields else ""
+    if not target:
         return None
-
-    curonian = _record_with(document, "kaliningrad", "across the russian border")
-    wadden = _record_with(document, "countries sharing the wadden sea eco-region")
-    tatras = _record_with(document, "twinned with", "slovakian border")
-    if not curonian or not wadden or not tatras:
-        return None
-
-    curonian_quote = _sentence_with(curonian.text, "kaliningrad", "russian border")
-    length = re.search(
-        r"(\d+)\s+Length of.*?-\s*(\d+)\s+of which is in Lithuania",
-        curonian.text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    wadden_quote = _sentence_with(
-        wadden.text,
-        "Denmark's national park",
-        "Germany",
-        "Netherlands",
-    )
-    tatras_quote = _sentence_with(tatras.text, "twinned with", "Slovakian border")
-    year = re.search(r"Since\s+(\d{4})", tatras_quote, re.IGNORECASE)
-    if not curonian_quote or not length or not wadden_quote or not tatras_quote:
-        return None
-
-    answer = (
-        f"{curonian.title} crosses from Lithuania into Russia's Kaliningrad region; "
-        f"{length.group(2)} km of the {length.group(1)} km spit lie in Lithuania. "
-        f"{wadden.title} is a shared eco-region spanning Denmark, Germany and the "
-        "Netherlands. "
-        f"{tatras.title} in Poland has been formally twinned with Tatranský Národný "
-        f"Park across the Slovakian border{f' since {year.group(1)}' if year else ''}."
-    )
-    evidence = [curonian_quote, wadden_quote, tatras_quote]
-    pages = [
-        _page_with(curonian, "kaliningrad", "russian border"),
-        _page_with(wadden, "Denmark's national park", "Netherlands"),
-        _page_with(tatras, "twinned with", "Slovakian border"),
-    ]
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=evidence,
-        source_pages=sorted(set(pages)),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _threat_absence_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    required_terms = (
-        "poaching",
-        "wartime damage",
-        "glacier retreat",
-        "visitor numbers",
-    )
-    if not all(term in folded for term in required_terms):
-        return None
-    full_text = "\n".join(record.text for record in document.records)
-    if re.search(r"\bpoach(?:ing|ed|er|ers)?\b", full_text, re.IGNORECASE):
-        return None
-
-    jostedalsbreen = _record_with(document, "global warming", "shrink markedly")
-    cinque_terre = _record_with(document, "tourists began to trickle", "become a flood")
-    plitvice = _record_with(document, "embroiled in the 1990s conflict")
-    if not jostedalsbreen or not cinque_terre or not plitvice:
-        return None
-
-    glacier_quote = _sentence_with(jostedalsbreen.text, "global warming", "shrink markedly")
-    visitor_quote = _sentence_with(
-        cinque_terre.text,
-        "tourists began to trickle",
-        "become a flood",
-    )
-    wartime_quote = _sentence_with(plitvice.text, "embroiled in the 1990s conflict")
-    answer = (
-        "Poaching is the only one of the four threats never raised in the book. "
-        "The other three are explicitly discussed: Jostedalsbreen's glaciers are "
-        "shrinking markedly under global warming; at Cinque Terre, tourism grew from "
-        "a trickle into a flood so large that visitors now need tickets; and Plitvice "
-        "was embroiled in the 1990s conflict and placed on the World Heritage in "
-        "Danger list because of the risk of mines."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[glacier_quote, visitor_quote, wartime_quote],
-        source_pages=sorted(
-            {
-                _page_with(jostedalsbreen, "global warming", "shrink markedly"),
-                _page_with(cinque_terre, "tourists began to trickle", "become a flood"),
-                _page_with(plitvice, "embroiled in the 1990s conflict"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _designation_absence_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    required_terms = (
-        "natura 2000",
-        "world heritage",
-        "biosphere reserve",
-        "national nature reserve",
-    )
-    if not all(term in folded for term in required_terms):
-        return None
-
-    full_text = "\n".join(record.text for record in document.records)
-    if re.search(r"\bnatura\s+2000\b", full_text, re.IGNORECASE):
-        return None
-
-    world_heritage = _record_with(document, "world heritage list since 1980")
-    biosphere = _record_with(document, "unesco biosphere reserve status arrived")
-    nature_reserves = _record_with(document, "national nature reserves")
-    if not world_heritage or not biosphere or not nature_reserves:
-        return None
-
-    world_quote = _sentence_with(world_heritage.text, "world heritage list since 1980")
-    biosphere_quote = _sentence_with(biosphere.text, "unesco biosphere reserve status arrived")
-    reserve_quote = _sentence_with(nature_reserves.text, "national nature reserves")
-    if not world_quote or not biosphere_quote or not reserve_quote:
-        return None
-
-    answer = (
-        "Natura 2000 is the only one of the four designations never mentioned in "
-        "the book. Unesco World Heritage status appears for several parks, including "
-        "Durmitor, which has been on the World Heritage List since 1980. Unesco "
-        "biosphere reserve status also appears, for example at Retezat, and the "
-        "Slovenský Raj entry explicitly mentions 11 national nature reserves."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[world_quote, biosphere_quote, reserve_quote],
-        source_pages=sorted(
-            {
-                _page_with(world_heritage, "world heritage list since 1980"),
-                _page_with(biosphere, "unesco biosphere reserve status arrived"),
-                _page_with(nature_reserves, "national nature reserves"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _human_wilderness_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "human habitation" not in folded or "wilderness" not in folded:
-        return None
-
-    abisko = _record_with(document, "reindeer husbandry is still prevalent")
-    carpathians = _record_with(document, "hutsuls herd sheep in summer")
-    cinque_terre = _record_with(document, "drystone walls", "built by hand")
-    if not abisko or not carpathians or not cinque_terre:
-        return None
-
-    abisko_quote = _sentence_with(abisko.text, "reindeer husbandry is still prevalent")
-    hutsul_quote = _sentence_with(carpathians.text, "hutsuls herd sheep in summer")
-    terrace_quote = _sentence_with(cinque_terre.text, "drystone walls", "built by hand")
-    answer = (
-        "Taken as a whole, the book presents Europe's national parks as inhabited, "
-        "working landscapes rather than untouched wilderness. Traditional land use "
-        "is treated as part of the cultural and ecological heritage the parks protect, "
-        "not simply as a threat to exclude. At Abisko, Sámi communities still practise "
-        "seasonal reindeer husbandry; in the Carpathians, Hutsuls herd sheep on alpine "
-        "meadows and make cheese; and Cinque Terre's cultivated slopes are held by "
-        "thousands of kilometres of hand-built drystone walls. Across the entries, "
-        "wilderness descriptions repeatedly sit alongside villages, farms, terraces, "
-        "herders and other cultural sites."
-    )
-    pages = [
-        _page_with(abisko, "reindeer husbandry is still prevalent"),
-        _page_with(carpathians, "hutsuls herd sheep in summer"),
-        _page_with(cinque_terre, "drystone walls", "built by hand"),
-    ]
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[abisko_quote, hutsul_quote, terrace_quote],
-        source_pages=sorted(set(pages)),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _glaciation_synthesis_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "glaciation" not in folded or "across" not in folded:
-        return None
-
-    abisko = _record_with(document, "glaciers", "retreated from the valleys")
-    cairngorms = _record_with(document, "last ice age", "glaciers gouged deep valleys")
-    jostedalsbreen = _record_with(document, "global warming", "shrink markedly")
-    vatnajokull = next(
-        (record for record in document.records if "vatnaj" in record.title.casefold()),
-        None,
-    )
-    if not abisko or not cairngorms or not jostedalsbreen:
-        return None
-
-    answer = (
-        "Across the book, glaciation is a recurring landscape-making explanation: "
-        "the last ice age is used to explain valleys, lakes, corries, cirques, moraines "
-        "and other carved landforms. Abisko links its canyons and valley walls to "
-        "retreating glaciers, while the Cairngorms entry says glaciers gouged deep "
-        "valleys and corries through the bedrock. Living glacier parks such as "
-        f"Jostedalsbreen{f' and {vatnajokull.title}' if vatnajokull else ''} present the "
-        "same process as continuing in the present. The book also connects current "
-        "retreat to climate change: Jostedalsbreen's glaciers are described as shrinking "
-        "markedly under global warming."
-    )
-    evidence = [
-        _sentence_with(abisko.text, "retreated from the valleys"),
-        _sentence_with(cairngorms.text, "last ice age", "glaciers gouged deep valleys"),
-        _sentence_with(jostedalsbreen.text, "global warming", "shrink markedly"),
-    ]
-    pages = [
-        _page_with(abisko, "retreated from the valleys"),
-        _page_with(cairngorms, "glaciers gouged deep valleys"),
-        _page_with(jostedalsbreen, "global warming", "shrink markedly"),
-    ]
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=evidence,
-        source_pages=sorted(set(pages)),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _species_recovery_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "species conservation" not in folded and "threatened wildlife" not in folded:
-        return None
-
-    abruzzo = _record_with(document, "abruzzo chamois", "almost died out", "over 2000")
-    donana = _record_with(document, "iberian lynx", "world's most endangered")
-    saxon = _record_with(document, "salmon populations", "bounced back")
-    if not abruzzo or not donana or not saxon:
-        return None
-
-    chamois_quote = _sentence_with(abruzzo.text, "almost died out", "over 2000")
-    lynx_quote = _sentence_with(donana.text, "iberian lynx", "world's most endangered")
-    salmon_quote = _sentence_with(saxon.text, "salmon populations", "bounced back")
-    lynx_fact = next(
-        (fact for fact in donana.number_facts if "iberian_lynx" in fact.field),
-        None,
-    )
-    if not chamois_quote or not lynx_quote or not salmon_quote or not lynx_fact:
-        return None
-
-    answer = (
-        "The recurring conservation story is broadly optimistic recovery: species "
-        "are driven close to extinction or severe decline and then rebuild under "
-        "protection. The Abruzzo chamois had fallen to only a few dozen but now numbers "
-        "over 2,000. At Doñana, the Iberian lynx is described as the world's most "
-        f"endangered wild cat, with {lynx_fact.raw_value} counted in 2015. At Saxon "
-        "Switzerland, dams and poor water quality decimated Elbe salmon, but the "
-        "population bounced back. Together these before-and-after accounts present the "
-        "parks as conservation successes while acknowledging how close the species came "
-        "to being lost."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[chamois_quote, lynx_quote, salmon_quote, lynx_fact.quote],
-        source_pages=sorted(
-            {
-                _page_with(abruzzo, "almost died out", "over 2000"),
-                _page_with(donana, "iberian lynx", "world's most endangered"),
-                lynx_fact.page,
-                _page_with(saxon, "salmon populations", "bounced back"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _unesco_status_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "unesco" not in folded or not all(
-        term in folded for term in ("inscribed", "nominated", "tentative")
-    ):
-        return None
-
-    durmitor = _record_with(document, "world heritage list since 1980")
-    plitvice = _record_with(document, "world heritage list in 1979")
-    maddalena = _record_with(document, "tentative list of unesco world heritage sites")
-    skadar = _record_with(document, "formally nominated for unesco world heritage")
-    retezat = _record_with(document, "unesco biosphere reserve status arrived")
-    tatras = _record_with(document, "forming a unesco biosphere reserve")
-    if not all((durmitor, plitvice, maddalena, skadar, retezat, tatras)):
-        return None
-
-    tentative_fact = next(
-        (fact for fact in maddalena.number_facts if "tentative_list" in fact.field),
-        None,
-    )
-    if not tentative_fact:
-        return None
-    evidence = [
-        _sentence_with(durmitor.text, "world heritage list since 1980"),
-        _sentence_with(plitvice.text, "world heritage list in 1979"),
-        tentative_fact.quote,
-        _sentence_with(skadar.text, "formally nominated", "late 2011"),
-        _sentence_with(retezat.text, "biosphere reserve status arrived"),
-        _sentence_with(tatras.text, "forming a unesco biosphere reserve"),
-    ]
-    answer = (
-        "The entries described as actually inscribed on the Unesco World Heritage "
-        "List are Durmitor, since 1980, and Plitvice, since 1979. Arcipelago di La "
-        f"Maddalena was only on the tentative list from {tentative_fact.raw_value}, "
-        "while Lake Skadar was only formally nominated in late 2011. Retezat and the "
-        "Tatras are described as Unesco biosphere reserves, which is a different "
-        "designation and not World Heritage inscription."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=evidence,
-        source_pages=sorted(
-            {
-                _page_with(durmitor, "world heritage list since 1980"),
-                _page_with(plitvice, "world heritage list in 1979"),
-                tentative_fact.page,
-                _page_with(skadar, "formally nominated", "late 2011"),
-                _page_with(retezat, "biosphere reserve status arrived"),
-                _page_with(tatras, "forming a unesco biosphere reserve"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
-def _climbing_firsts_answer(
-    plan: V3QuestionPlan,
-    document: CompiledDocument,
-) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "climbing" not in folded or "first" not in folded:
-        return None
-
-    ecrins = _record_with(document, "barre des écrins", "25 june 1864")
-    snowdonia = _record_with(
-        document,
-        "peter bailey williams",
-        "william bingley",
-        "first recorded rock climb in britain",
-    )
-    if not ecrins or not snowdonia:
-        return None
-    summit_quote = _sentence_with(ecrins.text, "barre des écrins", "25 june 1864")
-    climb_quote = _sentence_with(
-        snowdonia.text,
-        "peter bailey williams",
-        "william bingley",
-        "1798",
-    )
-    location_quote = _sentence_with(snowdonia.text, "clogwyn du'r arddu")
-    if not summit_quote or not climb_quote or not location_quote:
-        return None
-    answer = (
-        "The two climbing firsts are the first ascent of Barre des Écrins in Écrins "
-        "National Park on 25 June 1864, completed by Edward Whymper, Horace Walker and "
-        "A. W. Moore; and Britain's first recorded rock climb, completed by Peter "
-        "Bailey Williams and William Bingley on Clogwyn Du'r Arddu in Snowdonia in "
-        "1798."
-    )
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=answer,
-        evidence=[summit_quote, climb_quote, location_quote],
-        source_pages=sorted(
-            {
-                _page_with(ecrins, "barre des écrins", "25 june 1864"),
-                _page_with(snowdonia, "peter bailey williams", "1798"),
-                _page_with(snowdonia, "clogwyn du'r arddu"),
-            }
-        ),
-        complete=True,
-        strategy=plan.strategy,
-    )
+    holders = [table for table in trusted if target in table.columns]
+    return holders[0] if len(holders) == 1 else None
 
 
 def _registry_is_trusted(document: CompiledDocument) -> bool:
     return document.record_kind == "repeated_entity" and (
         document.registry_trusted or not document.registry_signals
     )
+
+
+def _entity_count_is_evidenced(document: CompiledDocument) -> bool:
+    """Report whether how many records exist is itself evidence, not a guess.
+
+    A registry can fail its integrity check because one signal disagrees —
+    fact cards lost in conversion, a contents page that did not parse — while
+    the record count remains well established. Cycle segmentation counts
+    chapters by a heading the document repeats exactly once per chapter, so
+    the marker tally corroborates the record count independently of whatever
+    else failed, and a question about how many entities exist can be answered
+    from it.
+    """
+    if document.record_kind != "repeated_entity" or not document.records:
+        return False
+    if _registry_is_trusted(document):
+        return True
+    signals = document.registry_signals
+    return (
+        signals.get("segmentation") == "boilerplate_cycle"
+        and signals.get("cycle_markers") == len(document.records)
+    )
+
+
+def _shaped(plan: V3QuestionPlan, *shapes: QuestionShape) -> bool:
+    """Whether the router sent this question to one of these operations."""
+    return plan.shape_plan.routes and plan.shape_plan.shape in shapes
+
+
+def _phrasing_may_route(plan: V3QuestionPlan) -> bool:
+    """Whether wording may still route a question the router did not shape.
+
+    A confident routing is a verdict and wording must not overrule it: where
+    it names an operation the plan already carries it, and where it says the
+    question is not structured at all, no executor should fire. An unsure
+    routing is not a verdict, though, and suppressing wording there leaves the
+    question with nothing when the phrasing would have answered it.
+    """
+    shape = plan.shape_plan
+    if shape.routes:
+        return False
+    return not (shape.confident and shape.shape == QuestionShape.SYNTHESIS)
 
 
 def _operation(plan: V3QuestionPlan, kind: OperationKind):
@@ -547,13 +385,7 @@ def _table_answer(
     document: CompiledDocument,
 ) -> ExecutionResult | None:
     """Execute grouped counts and extrema over a trusted compiled table."""
-    number = plan.metadata.get("source_table_number")
-    if number is None:
-        return None
-    table = next(
-        (item for item in document.tables if item.number == int(number) and item.trusted),
-        None,
-    )
+    table = _source_table(plan, document)
     if table is None or not table.rows:
         return None
 
@@ -583,43 +415,82 @@ def _table_answer(
     extrema = _operation(plan, OperationKind.ARGMAX) or _operation(plan, OperationKind.ARGMIN)
     if not target or extrema is None or target not in table.columns:
         return None
-    eligible = [row for row in table.rows if row.rank is not None]
-    if not eligible or any(target not in row.values for row in eligible):
-        return None
+    eligible = _comparable_rows(table, target)
     candidates = [
-        (row, row.values[target])
+        (row, float(row.values[target]))
         for row in eligible
         if isinstance(row.values.get(target), (int, float))
     ]
-    if not candidates:
+    if len(candidates) < 2:
         return None
     selector = min if extrema.kind == OperationKind.ARGMIN else max
-    row, raw_value = selector(candidates, key=lambda item: float(item[1]))
-    value = float(raw_value)
-    if target == "hdi_2023":
-        rendered = f"{value:.3f}"
-        label = "2023 Human Development Index"
-    elif target == "life_expectancy_2023":
-        rendered = f"{value:.1f} years"
-        label = "2023 life expectancy at birth"
-    elif target == "gni_per_capita_2023":
-        rendered = f"${value:,.0f} (2021 PPP)"
-        label = "2023 gross national income per capita"
-    else:
-        rendered = _format_number(value)
-        label = target.replace("_", " ")
+    row, value = selector(candidates, key=lambda item: item[1])
     direction = "lowest" if extrema.kind == OperationKind.ARGMIN else "highest"
+    label = target.replace("_", " ")
+    placing = f", ranked {row.rank}," if row.rank is not None else ""
+    ordered = sorted(candidates, key=lambda item: item[1], reverse=direction == "highest")
+    column = [item for _, item in candidates]
+    runners = ", ".join(
+        f"{other.label} at {_render_cell(other_value, column)}"
+        for other, other_value in ordered[1:3]
+    )
+    comparison = f" The next are {runners}." if runners else ""
+    # The caption tells one table from another; the leading number does not,
+    # because a report numbers its annex tables within the same chapter.
+    where = table.title.strip()[:60] or (
+        f"Table {table.number}" if table.number is not None else "the table"
+    )
     return ExecutionResult(
         question_id=plan.question_id,
         answer=(
-            f"Among the ranked entries, {row.label} has the {direction} {label}: "
-            f"{rendered}."
+            f"{row.label}{placing} has the {direction} {label} in {where}: "
+            f"{_render_cell(value, column)}.{comparison}"
         ),
-        evidence=[row.quote],
-        source_pages=[row.page],
+        evidence=[other.quote for other, _ in ordered[:3]],
+        source_pages=sorted({other.page for other, _ in ordered[:3]}),
         complete=True,
         strategy=plan.strategy,
     )
+
+
+def _render_cell(value: float, column: list[float] = ()) -> str:
+    """Write a table value at the precision its own column was printed in.
+
+    A column of life expectancies reads 84.0 rather than 84, and one of
+    incomes reads 166,812 rather than 166812.0. Deciding per value would
+    print the same column two ways, so the decimals come from the column.
+    """
+    places = max(
+        (len(f"{other:.10f}".rstrip("0").split(".")[1]) for other in column),
+        default=0,
+    )
+    places = min(places, 3)
+    return f"{value:,.{places}f}"
+
+
+def _comparable_rows(table, column: str) -> list:
+    """Return the rows of a table that describe one entry each.
+
+    A table mixes entries with the lines that summarise them. Where it ranks
+    its entries, the unranked lines are those summaries. Where it ranks
+    nothing, a line whose value accounts for all the others is the total, and
+    comparing entries against their own total would always return the total.
+    """
+    ranked = [row for row in table.rows if row.rank is not None]
+    rows = ranked or list(table.rows)
+    values = [
+        (row, float(row.values[column]))
+        for row in rows
+        if isinstance(row.values.get(column), (int, float))
+    ]
+    if len(values) < 3:
+        return [row for row, _ in values]
+    total = sum(value for _, value in values)
+    return [
+        row
+        for row, value in values
+        if abs(value - (total - value)) > max(1.0, abs(total) * 1e-6)
+    ]
 
 
 def _contents_answer(
@@ -774,45 +645,57 @@ def _composed_fact_answer(
     if argmax_step or argmin_step:
         value_key = (
             (lambda pair: _area_km2(pair[1]))
-            if target == "area"
+            if _has_mixed_area_units(candidates)
             else (lambda pair: pair[1].value)
         )
         selector = min if argmin_step else max
+        ordered = sorted(candidates, key=value_key, reverse=not argmin_step)
         record, fact = selector(candidates, key=value_key)
-        if target == "area":
-            answer = (
-                f"{record.title} has the largest monitored area: "
-                f"{fact.raw_value} {fact.unit}."
-            )
-        elif target == "annual_visitors":
-            answer = (
-                f"{record.title} reports the largest annual figure: "
-                f"{_format_number(fact.value)} visiting researchers per year."
-            )
-        elif target == "highest_point":
-            answer = (
-                f"{record.title} reports the highest operating point: "
-                f"{_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''}."
-            )
-        elif target == "annual_output":
-            answer = (
-                f"{record.title} reports the greatest annual output: "
-                f"{_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''}."
-            )
-        else:
-            answer = (
-                f"{record.title} has the maximum reported value: "
-                f"{_format_number(fact.value)}{f' {fact.unit}' if fact.unit else ''}."
-            )
+        extreme = _extreme_word(bool(argmin_step), candidates)
+        answer = _extremum_sentence(record, fact, target, extreme, ordered[1:3])
         return ExecutionResult(
             question_id=plan.question_id,
             answer=answer,
-            evidence=[_fact_evidence(record, fact)],
-            source_pages=[fact.page],
+            evidence=[_fact_evidence(other, item) for other, item in ordered[:3]],
+            source_pages=sorted({item.page for _, item in ordered[:3]}),
             complete=True,
             strategy=plan.strategy,
         )
     return None
+
+
+def _extremum_sentence(
+    record: CompiledRecord,
+    fact: NumberFact,
+    field: str,
+    extreme: str,
+    runners_up: list[tuple[CompiledRecord, NumberFact]],
+) -> str:
+    """State an extremum with everything the registry already knows about it.
+
+    A question asking which record leads on a measure is usually also asking
+    what the measured thing is called, where it is, and how far ahead it sits.
+    All three are already bound to the winning row — the fact's subject, the
+    record's group, and the rows either side of it — so leaving them out
+    answers less of the question than the evidence supports.
+    """
+    value = _written_value(fact)
+    if fact.unit:
+        value += f" {fact.unit}"
+    named = f" ({fact.subject})" if fact.subject else ""
+    where = f", in {record.country}" if record.country else ""
+    sentence = (
+        f"{record.title} reports the {extreme} {_metric_phrase(field, fact)}: "
+        f"{value}{named}{where}."
+    )
+    if runners_up:
+        comparison = ", ".join(
+            f"{other.title} at {_written_value(item)}"
+            f"{f' {item.unit}' if item.unit else ''}"
+            for other, item in runners_up
+        )
+        sentence += f" The next highest are {comparison}."
+    return sentence
 
 
 def _sentences(text: str) -> list[str]:
@@ -873,13 +756,86 @@ def _designation_argmax_answer(
 
 
 def _record_is_named(record: CompiledRecord, question: str) -> bool:
-    folded = question.casefold()
+    """Whether the question already names this record, even by a shorter form.
+
+    A question may use a name shorter than the record's own title — "Snowdon"
+    for "Snowdonia National Park" — so a prefix match in either direction
+    catches that without knowing anything about what the name refers to.
+    """
     title_words = [
         word
         for word in re.findall(r"[a-z0-9]+", record.title.casefold())
         if len(word) >= 4
     ]
-    return bool(title_words and title_words[0] in folded)
+    if not title_words:
+        return False
+    stem = title_words[0]
+    return any(
+        stem.startswith(word) or word.startswith(stem)
+        for word in re.findall(r"[a-z0-9]+", question.casefold())
+        if len(word) >= 4
+    )
+
+
+def _measured_field_terms(field: str) -> set[str]:
+    """Return the words of a field name that say what it measures.
+
+    A field carries the edition it was published in — "hdi 2023", "population
+    2019" — and matching on that number, or on the word "year" itself, would
+    pair a question with whichever field happened to share an edition rather
+    than a subject.
+    """
+    return {
+        term
+        for term in field.casefold().split("_")
+        if term and term != "year" and not term.isdigit()
+    }
+
+
+def _claim_field(record: CompiledRecord, claim: str) -> str:
+    """Pick which of a record's own fields a claim's superlative measures.
+
+    This only runs once the question's own routing gave no field. Matching is
+    scoped to the fields this one record reports — not the whole document's
+    catalog, which invites an unrelated field to win on a shared word merely
+    because it exists somewhere else in the book — and a field whose unit is
+    a rate or a share is set aside unless the claim itself is about a rate: a
+    "highest" label just as easily belongs to an unrelated field such as a
+    top wind speed as it does to an elevation, and only the unit tells them
+    apart.
+    """
+    if not record.number_facts:
+        return ""
+    claim_folded = claim.casefold()
+    claim_terms = set(re.findall(r"[a-z0-9]+", claim_folded))
+    mentions_rate = bool(re.search(r"speed|\brate\b|percent|\bper\b|%", claim_folded))
+    scored: list[tuple[int, str]] = []
+    for fact in record.number_facts:
+        terms = _measured_field_terms(fact.field)
+        overlap = len(terms & claim_terms)
+        if not overlap:
+            continue
+        penalty = 2 if not mentions_rate and _RATE_UNIT_RE.search(fact.unit or "") else 0
+        scored.append((overlap - penalty, fact.field))
+    if not scored:
+        return ""
+    return max(scored, key=lambda item: item[0])[1]
+
+
+def _claim_scope_group(plan: V3QuestionPlan, claim: str, requested_claim: str) -> str:
+    """Return the group a claim's boast is scoped to, when that is knowable.
+
+    The router reads the whole question and may already say what population
+    the claim ranks within; that is the more reliable source and wins when
+    given. Failing that, the noun right before the matching superlative in
+    the claim itself usually names it — "Norway's largest", "Britain's
+    second-highest" — read the same way whatever the document is about.
+    """
+    scope = (plan.shape_plan.claim_scope or "").strip()
+    if scope:
+        return scope.casefold()
+    match = _find_possessive_claim(claim.casefold(), requested_claim)
+    return match.group(1) if match else ""
 
 
 def _generic_claim_conflict(
@@ -887,6 +843,12 @@ def _generic_claim_conflict(
     document: CompiledDocument,
 ) -> ExecutionResult | None:
     if plan.category != "contradiction" or not _registry_is_trusted(document):
+        return None
+    # A question can contradict the document in more ways than one. Where the
+    # router named which, that verdict decides the executor: a question about
+    # units reported inconsistently is not a question about an overstated
+    # superlative, and answering it as one states a claim nobody made.
+    if not _shaped(plan, QuestionShape.CLAIM_CONFLICT) and not _phrasing_may_route(plan):
         return None
     records = sorted(
         document.records,
@@ -904,7 +866,15 @@ def _generic_claim_conflict(
         claim_candidates = []
         for sentence in _sentences(record.text):
             folded_sentence = sentence.casefold()
-            if not any(term in folded_sentence for term in ("highest", "largest", "oldest")):
+            # The question asks about one kind of boast; a chapter that calls
+            # itself the oldest is not making the claim a question about size
+            # would contradict.
+            wanted = (requested_claim,) if requested_claim else (
+                "highest", "largest", "oldest",
+            )
+            if not any(term in folded_sentence for term in wanted):
+                continue
+            if _is_negated(folded_sentence):
                 continue
             claim_markers = (
                 "calls ",
@@ -926,32 +896,83 @@ def _generic_claim_conflict(
                 )
             ) and not any(marker in folded_sentence for marker in claim_markers):
                 continue
-            score = sum(
-                marker in folded_sentence
-                for marker in claim_markers
+            has_marker = any(marker in folded_sentence for marker in claim_markers)
+            # A possessive right before the superlative is itself an
+            # assertion — "Norway's largest" — even with none of the marker
+            # phrases above, unless the noun after it belongs to something
+            # the record merely contains rather than to the record itself.
+            possessive = _find_possessive_claim(folded_sentence, requested_claim)
+            has_possessive_claim = bool(possessive) and not _is_partitive_claim(
+                folded_sentence, possessive.end()
             )
+            # A marker phrase is already a direct assertion and needs no
+            # further check; a bare possessive, with nothing else vouching
+            # for it, only counts when its object is the kind of thing this
+            # registry catalogues.
+            if has_possessive_claim and not has_marker:
+                has_possessive_claim = _claim_names_the_entity(
+                    folded_sentence, possessive.end(), document.entity_label
+                )
+            if not has_marker and not has_possessive_claim:
+                # Nothing here actually asserts anything; a coincidental
+                # mention of the record's own name proves nothing on its own.
+                continue
+            score = sum(marker in folded_sentence for marker in claim_markers)
+            if has_possessive_claim:
+                score += 2
+            # The record naming itself only strengthens a claim already
+            # found by one of the checks above — a bare mention elsewhere in
+            # the sentence, with neither, is not evidence of anything.
             if record.title.split()[0].casefold() in folded_sentence:
                 score += 2
             claim_candidates.append((score, sentence))
-        claim = max(claim_candidates, default=(0, ""), key=lambda item: item[0])[1]
-        if not claim or not record.country:
+        best_score, claim = max(claim_candidates, default=(0, ""), key=lambda item: item[0])
+        # A sentence that merely contains "highest" is not a claim about this
+        # record — a park's chapter can describe "the highest points of the
+        # [mountain range]" without saying anything about itself. Only a
+        # sentence that scored on an actual assertion marker is one.
+        if best_score <= 0 or not claim or not record.country:
             continue
         folded_claim = claim.casefold()
         if requested_claim and requested_claim not in folded_claim:
             continue
-        if "highest" in folded_claim:
-            field, comparison = "highest_point", "greater"
-        elif "largest" in folded_claim:
-            field, comparison = "area", "greater"
-        else:
-            field, comparison = "establishment_year", "earlier"
+        # The measurement is whichever the question was bound to; when the
+        # question names none, the claim itself says what it boasts about, so
+        # match its wording against this record's own fields.
+        field = plan.target_fields[0] if plan.target_fields else _claim_field(record, claim)
+        comparison = (
+            "earlier"
+            if any(
+                term in folded_claim
+                for term in ("oldest", "earliest", "first", "lowest", "smallest", "least")
+            )
+            else "greater"
+        )
+        if not field:
+            continue
         own = next((fact for fact in record.number_facts if fact.field == field), None)
         if own is None:
             continue
+        # The claim's own scope decides which records it can be checked
+        # against. A boast with no stated scope, or one that names this
+        # record's own group, keeps the narrow, safe comparison. A boast
+        # scoped to everything ("the world's") has no group here narrower
+        # than the whole registry, so comparison widens to match. A boast
+        # scoped to something else this registry does not model as a group
+        # of its own — "Britain's", spanning several of the countries records
+        # are filed under — cannot be checked against any group known to be
+        # exactly that population, and guessing narrow or wide both risk
+        # comparing against the wrong set, so the claim is left unresolved.
+        scope_group = _claim_scope_group(plan, claim, requested_claim)
+        own_group = record.country.casefold()
+        if scope_group and scope_group not in _UNIVERSAL_SCOPES and scope_group != own_group:
+            continue
+        narrow = not scope_group or scope_group == own_group
         peers = [
             (other, fact)
             for other, fact in _facts(document, field)
-            if other.record_id != record.record_id and other.country == record.country
+            if other.record_id != record.record_id
+            and (not narrow or other.country == record.country)
         ]
         explicit_comparison: tuple[CompiledRecord, NumberFact, str] | None = None
         record_name = record.title.split()[0].casefold()
@@ -971,7 +992,7 @@ def _generic_claim_conflict(
             if sentence:
                 explicit_comparison = (other, fact, sentence)
                 break
-        if field == "area":
+        if _has_mixed_area_units(peers + [(record, own)]):
             conflicts = [pair for pair in peers if _area_km2(pair[1]) > _area_km2(own)]
             selected = max(conflicts, key=lambda pair: _area_km2(pair[1])) if conflicts else None
         elif comparison == "greater":
@@ -988,7 +1009,7 @@ def _generic_claim_conflict(
             explicit_record, explicit_fact, explicit_quote = explicit_comparison
             is_conflict = (
                 _area_km2(explicit_fact) > _area_km2(own)
-                if field == "area"
+                if _has_mixed_area_units(peers + [(record, own)])
                 else (
                     explicit_fact.value > own.value
                     if comparison == "greater"
@@ -1003,7 +1024,10 @@ def _generic_claim_conflict(
             answer=(
                 f"Claim: {claim} The compiled figures give {record.title} as "
                 f"{own.raw_value}{f' {own.unit}' if own.unit else ''}. "
-                f"Counterevidence: {other.title}, also in {record.country}, is reported as "
+                # The counter-record's own country, not the claimant's — a
+                # widened comparison can cross into a different one.
+                f"Counterevidence: {other.title}"
+                f"{f', in {other.country},' if other.country else ''} is reported as "
                 f"{counter.raw_value}{f' {counter.unit}' if counter.unit else ''}. "
                 "These figures contradict the stated rank."
             ),
@@ -1026,10 +1050,13 @@ def _dated_first_comparison(
 ) -> ExecutionResult | None:
     if not _operation(plan, OperationKind.DATE_DIFFERENCE):
         return None
+    founding_field = _year_field(document)
+    if not founding_field:
+        return None
     events: list[tuple[CompiledRecord, NumberFact, int, int, str]] = []
     for record in document.records:
         established = next(
-            (fact for fact in record.number_facts if fact.field == "establishment_year"),
+            (fact for fact in record.number_facts if fact.field == founding_field),
             None,
         )
         if established is None:
@@ -1077,7 +1104,9 @@ def _generic_cross_border_relations(
 ) -> ExecutionResult | None:
     """Join three explicitly distinct cross-border relationship structures."""
     folded = plan.question.casefold()
-    if not (
+    if _shaped(plan, QuestionShape.RELATION):
+        pass
+    elif not _phrasing_may_route(plan) or not (
         "straddl" in folded
         and "transboundary" in folded
         and "paired" in folded
@@ -1176,7 +1205,11 @@ def _generic_needle_answer(
     document: CompiledDocument,
 ) -> ExecutionResult | None:
     folded = plan.question.casefold()
-    if any(term in folded for term in ("begin as", "began as", "start out", "started as")):
+    shape = plan.shape_plan
+    routed_event = _shaped(plan, QuestionShape.DATED_EVENT)
+    if _phrasing_may_route(plan) and any(
+        term in folded for term in ("begin as", "began as", "start out", "started as")
+    ):
         requested_subject = _question_subject(
             plan.question,
             (
@@ -1220,7 +1253,9 @@ def _generic_needle_answer(
                         strategy=plan.strategy,
                     )
 
-    if "estimated age" in folded or "estimated" in folded and "years" in folded:
+    if _phrasing_may_route(plan) and (
+        "estimated age" in folded or ("estimated" in folded and "years" in folded)
+    ):
         requested_subject = _question_subject(
             plan.question,
             (
@@ -1274,19 +1309,29 @@ def _generic_needle_answer(
                         strategy=plan.strategy,
                     )
 
-    if "first recorded" in folded:
+    if routed_event or (_phrasing_may_route(plan) and "first recorded" in folded):
+        # A routed question already names the event and whose event it is;
+        # otherwise both have to be read back out of the question's wording.
         event_match = re.search(
             r"first\s+recorded\s+(?P<event>.+?)\s+(?:dated|date)",
             plan.question,
             re.IGNORECASE,
         )
-        event = event_match.group("event").strip(" ?.,") if event_match else ""
-        owner = _question_subject(
-            plan.question,
-            (
-                r"(?:in\s+what\s+year\s+is|what\s+year\s+is|when\s+(?:was|is))\s+"
-                r"(?P<subject>[A-Z][A-Za-z'\- ]+?)[\u2019']s\s+first\s+recorded",
-            ),
+        event = (
+            shape.event
+            if routed_event and shape.event
+            else (event_match.group("event").strip(" ?.,") if event_match else "")
+        )
+        owner = (
+            shape.subject
+            if routed_event and shape.subject
+            else _question_subject(
+                plan.question,
+                (
+                    r"(?:in\s+what\s+year\s+is|what\s+year\s+is|when\s+(?:was|is))\s+"
+                    r"(?P<subject>[A-Z][A-Za-z'\- ]+?)[\u2019']s\s+first\s+recorded",
+                ),
+            )
         )
         for record in document.records:
             if owner and owner.casefold() not in record.text.casefold():
@@ -1295,16 +1340,50 @@ def _generic_needle_answer(
                 hint.casefold() in record.title.casefold() for hint in plan.entity_hints
             ):
                 continue
-            phrase = f"first recorded {event}" if event else "first recorded"
+            # The router names the whole event ("first recorded eruption");
+            # the wording fallback captures only what follows the words it
+            # matched on, so only that needs them put back.
+            phrase = (
+                event.casefold()
+                if routed_event and event
+                else (f"first recorded {event}" if event else "first recorded")
+            )
+            label = f"The {phrase}" if phrase != "first recorded" else "The event"
+            # A routed event is the model's wording for what the question asks
+            # about, and the document's label for the same thing reads
+            # differently — "of Etna" against "of the Etna volcano". Requiring
+            # the phrase to appear whole would miss it, so require its words.
+            wanted = _content_words(phrase)
+            # The compiler bound this figure to the label that names it. A
+            # fact card carries no sentence punctuation, so re-reading its raw
+            # text matches the first number in the whole card — an area or a
+            # summit height — rather than the year being asked about.
+            bound = next(
+                (
+                    item
+                    for item in record.number_facts
+                    if _label_covers(item.label, phrase, wanted)
+                ),
+                None,
+            )
+            if bound is not None:
+                era = " BC" if bound.value < 0 or "bc" in bound.unit.casefold() else ""
+                return ExecutionResult(
+                    question_id=plan.question_id,
+                    answer=f"{label} is dated to {abs(bound.value):g}{era}.",
+                    evidence=[_fact_evidence(record, bound)],
+                    source_pages=[bound.page],
+                    complete=True,
+                    strategy=plan.strategy,
+                )
             sentence = _sentence_with(record.text, phrase)
             match = re.search(
-                r"(?:dated\s+to\s+)?(\d[\d,]*)\s*(BC|BCE|AD|CE)?",
+                rf"{re.escape(phrase)}\D{{0,40}}?(\d[\d,]*)\s*(BC|BCE|AD|CE)?",
                 sentence,
                 re.IGNORECASE,
             )
             if sentence and match:
                 era = f" {match.group(2).upper()}" if match.group(2) else ""
-                label = f"The first recorded {event}" if event else "The event"
                 return ExecutionResult(
                     question_id=plan.question_id,
                     answer=f"{label} is dated to {match.group(1)}{era}.",
@@ -1317,218 +1396,144 @@ def _generic_needle_answer(
 
 
 def _catalog_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    if not _registry_is_trusted(document):
+    """Count records, and records per named group, from the closed catalog."""
+    if not _entity_count_is_evidenced(document):
         return None
     folded = plan.question.casefold()
-    countries = _country_mentions(plan.question, document)
-    if "profile" in folded and "in total" in folded and countries:
-        country = countries[0]
-        selected = [record for record in document.records if record.country == country]
+    if _shaped(plan, QuestionShape.COUNT_ENTITIES):
+        groups = plan.shape_plan.groups
+        wants_total = not groups or "total" in folded
+    elif _phrasing_may_route(plan):
+        groups = _country_mentions(plan.question, document)
+        wants_total = "profile" in folded and "in total" in folded
+        if not groups or not (wants_total or "how many" in folded):
+            return None
+    else:
+        return None
+
+    noun = document.entity_label or "entity"
+    members = {
+        group: [record for record in document.records if record.country == group]
+        for group in groups
+    }
+    pages = sorted({
+        record.page_start for records in members.values() for record in records
+    })
+
+    if len(groups) <= 1 and wants_total:
+        total = f"The guide profiles {len(document.records)} {noun}s in total."
+        if not groups:
+            return ExecutionResult(
+                question_id=plan.question_id,
+                answer=total,
+                evidence=[f"Compiled chapter catalog: {len(document.records)} records"],
+                source_pages=[record.page_start for record in document.records[:5]],
+                complete=True,
+                strategy=plan.strategy,
+            )
+        group = groups[0]
+        selected = members[group]
         names = ", ".join(record.title for record in selected)
-        noun = document.entity_label or "entity"
         return ExecutionResult(
             question_id=plan.question_id,
-            answer=(
-                f"The guide profiles {len(document.records)} {noun}s in total. "
-                f"{len(selected)} are in {country}: {names}."
-            ),
+            answer=f"{total} {len(selected)} are in {group}: {names}.",
             evidence=[f"Compiled chapter catalog: {len(document.records)} records"],
-            source_pages=[record.page_start for record in selected],
+            source_pages=pages,
             complete=bool(selected),
             strategy=plan.strategy,
         )
-    if "how many" in folded and len(countries) >= 2:
-        clauses: list[str] = []
-        pages: list[int] = []
-        for country in countries:
-            selected = [record for record in document.records if record.country == country]
-            clauses.append(
-                f"{country} has {len(selected)}: " + ", ".join(record.title for record in selected)
-            )
-            pages.extend(record.page_start for record in selected)
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer="; ".join(clauses) + ".",
-            evidence=["Counts computed from the closed chapter catalog"],
-            source_pages=sorted(set(pages)),
-            complete=all(f"{country} has 0" not in clauses for country in countries),
-            strategy=plan.strategy,
-        )
-    return None
 
-
-def _threshold_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    comparison_terms = ("more", "above", "over", "at least", "or more")
-    if "highest point" not in folded or not any(term in folded for term in comparison_terms):
+    if not groups:
         return None
-    match = re.search(r"(\d[\d,]*)\s*met", folded)
-    if not match:
-        return None
-    threshold = float(match.group(1).replace(",", ""))
-    selected = [
-        (record, fact)
-        for record, fact in _facts(document, "highest_point")
-        if fact.value >= threshold
+    clauses = [
+        f"{group} has {len(members[group])}: "
+        + ", ".join(record.title for record in members[group])
+        for group in groups
     ]
-    selected.sort(key=lambda pair: pair[1].value, reverse=True)
-    details = ", ".join(
-        f"{record.title} ({fact.subject or 'highest point'}, {fact.value:g}m)"
-        for record, fact in selected
-    )
     return ExecutionResult(
         question_id=plan.question_id,
-        answer=(
-            f"{len(selected)} parks report a highest point of at least {threshold:g}m: {details}."
-        ),
-        evidence=[_fact_evidence(record, fact) for record, fact in selected],
-        source_pages=[fact.page for _, fact in selected],
-        complete=bool(selected),
+        answer="; ".join(clauses) + ".",
+        evidence=["Counts computed from the closed chapter catalog"],
+        source_pages=pages,
+        complete=all(members[group] for group in groups),
         strategy=plan.strategy,
     )
 
 
-def _superlative_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "largest area" in folded or "covers the largest area" in folded:
-        candidates = _facts(document, "area")
-        if not candidates:
-            return None
-        record, fact = max(candidates, key=lambda pair: _area_km2(pair[1]))
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"{record.title} is the largest, covering {fact.raw_value} "
-                f"{fact.unit} in {record.country}."
-            ),
-            evidence=[_fact_evidence(record, fact)],
-            source_pages=[fact.page],
-            complete=True,
-            strategy=plan.strategy,
-        )
-    if "highest summit" in folded or ("highest point" in folded and "across every" in folded):
-        candidates = _facts(document, "highest_point")
-        if not candidates:
-            return None
-        record, fact = max(candidates, key=lambda pair: pair[1].value)
-        location = f", {record.country}" if record.country else ""
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"The highest is {fact.subject} at {fact.value:g}m in {record.title}{location}."
-            ),
-            evidence=[_fact_evidence(record, fact)],
-            source_pages=[fact.page],
-            complete=bool(fact.subject),
-            strategy=plan.strategy,
-        )
-    if "largest number of visitors" in folded or "most visitors" in folded:
-        candidates = _facts(document, "annual_visitors")
-        if not candidates:
-            return None
-        ordered = sorted(candidates, key=lambda pair: pair[1].value, reverse=True)
-        record, fact = ordered[0]
-        comparison = ""
-        if len(ordered) > 1:
-            examples = ", ".join(
-                f"{other.title} reports {_format_number(other_fact.value)}"
-                for other, other_fact in ordered[1:3]
-            )
-            comparison = (
-                " This is larger than every other annual visitor figure in the "
-                f"book; for comparison, {examples}."
-            )
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"{record.title} reports the most visitors: "
-                f"{_format_number(fact.value)} per year.{comparison}"
-            ),
-            evidence=[_fact_evidence(other, other_fact) for other, other_fact in ordered[:3]],
-            source_pages=[other_fact.page for _, other_fact in ordered[:3]],
-            complete=True,
-            strategy=plan.strategy,
-        )
-    return None
-
-
-def _needle_answer(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "icehotel" in folded and any(term in folded for term in ("start out", "begin")):
-        record = _record_with(document, "starting as", "icehotel")
-        if not record:
-            return None
-        quote = _sentence_with(record.text, "starting as", "icehotel")
-        match = re.search(
-            r"Starting as (?:a |an )?(.+?) in (\d{4}),\s*the Icehotel",
-            quote,
-            re.IGNORECASE,
-        )
-        if not match:
-            return None
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"The Icehotel started out as a {match.group(1)} in "
-                f"{match.group(2)}."
-            ),
-            evidence=[quote],
-            source_pages=[_page_with(record, "starting as", "icehotel")],
-            complete=True,
-            strategy=plan.strategy,
-        )
-    if "oldest tree" in folded:
-        candidates = _facts(document, "oldest_tree_age")
-        if not candidates:
-            return None
-        record, fact = max(candidates, key=lambda pair: pair[1].value)
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=(
-                f"The oldest named tree is the {fact.subject}, estimated at "
-                f"{fact.value:g} years old, in {record.title}, {record.country}."
-            ),
-            evidence=[_fact_evidence(record, fact)],
-            source_pages=[fact.page],
-            complete=bool(fact.subject and record.country),
-            strategy=plan.strategy,
-        )
-    if "first recorded eruption" in folded:
-        candidates = _facts(document, "first_recorded_eruption_year")
-        if not candidates:
-            return None
-        record, fact = candidates[0]
-        year = f"{abs(fact.value):g} BC" if fact.value < 0 else f"{fact.value:g}"
-        return ExecutionResult(
-            question_id=plan.question_id,
-            answer=f"Etna's first recorded eruption is dated to {year}.",
-            evidence=[_fact_evidence(record, fact)],
-            source_pages=[fact.page],
-            complete=True,
-            strategy=plan.strategy,
-        )
-    return None
-
-
 def _unit_outlier(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
     folded = plan.question.casefold()
-    if "different units" not in folded and "different unit" not in folded:
+    if not _shaped(plan, QuestionShape.UNIT_OUTLIER) and not (
+        _phrasing_may_route(plan)
+        and ("different units" in folded or "different unit" in folded)
+    ):
         return None
-    candidates = _facts(document, "area")
-    counts = Counter(fact.unit for _, fact in candidates if fact.unit)
-    if len(counts) < 2:
-        return None
-    common = counts.most_common(1)[0][0]
-    outliers = [(record, fact) for record, fact in candidates if fact.unit and fact.unit != common]
-    if len(outliers) != 1:
+    # The question does not say which measurement disagrees, so look for the
+    # field whose rows state one unit everywhere except in a single record.
+    # A field the router bound is a verdict and settles which field to check.
+    # A field the compiler merely guessed by matching the question's words
+    # against every field in the document is not a verdict — "park area" can
+    # land on "years humans have been active in the park area" — so it is one
+    # candidate among many. Ranking survives a bad guess where restricting to
+    # it does not.
+    target = (
+        plan.target_fields[0]
+        if plan.target_fields and _shaped(plan, QuestionShape.UNIT_OUTLIER)
+        else ""
+    )
+    coverage = Counter(
+        fact.field for record in document.records for fact in record.number_facts
+    )
+    # A question that says which measurement it is about — "reports its area"
+    # — names the field to check, and that naming is worth more than any
+    # count: two measurements can each have one odd unit, and only one of them
+    # is the one asked about. Failing that, a question about a measurement
+    # every record reports is about a widely reported field, so try those
+    # first; a one-off metric that happens to disagree on units would
+    # otherwise win by being alphabetically earlier.
+    asked = _content_words(plan.question)
+    fields = [target] if target else [
+        field
+        for field, _ in sorted(
+            coverage.items(),
+            key=lambda item: (
+                -len(_content_words(item[0].replace("_", " ")) & asked),
+                -item[1],
+                item[0],
+            ),
+        )
+    ]
+    for field in fields:
+        candidates = _facts(document, field)
+        # A record states each measurement once. Two units for one field
+        # inside a single record means its boundary swallowed a neighbour's
+        # fact card, so the odd unit belongs to a record we cannot name.
+        per_record: dict[str, set[str]] = {}
+        for record, fact in candidates:
+            if fact.unit:
+                per_record.setdefault(record.record_id, set()).add(fact.unit.casefold())
+        if any(len(units) > 1 for units in per_record.values()):
+            continue
+        counts = Counter(fact.unit for _, fact in candidates if fact.unit)
+        if len(counts) < 2:
+            continue
+        common = counts.most_common(1)[0][0]
+        outliers = [
+            (record, fact)
+            for record, fact in candidates
+            if fact.unit and fact.unit != common and _same_dimension(fact.unit, common)
+        ]
+        if len(outliers) == 1:
+            break
+    else:
         return None
     record, fact = outliers[0]
+    noun = document.entity_label or "record"
     return ExecutionResult(
         question_id=plan.question_id,
         answer=(
-            f"{record.title} is the exception: its area is reported as "
-            f"{fact.raw_value} {fact.unit}; "
-            f"the other park cards use {common}."
+            f"{record.title} is the exception: its {_metric_phrase(field, fact)} is "
+            f"reported as {fact.raw_value} {fact.unit}; "
+            f"the other {noun} cards use {common}."
         ),
         evidence=[_fact_evidence(record, fact)],
         source_pages=[fact.page],
@@ -1542,16 +1547,29 @@ def _largest_claim_conflict(
     document: CompiledDocument,
 ) -> ExecutionResult | None:
     folded = plan.question.casefold()
-    if "largest in its country" not in folded:
+    if not _shaped(plan, QuestionShape.CLAIM_CONFLICT) and not (
+        _phrasing_may_route(plan) and "largest in its country" in folded
+    ):
+        return None
+    # The measured quantity is whichever field the question was bound to;
+    # without one there is nothing to compare the boast against.
+    field = plan.target_fields[0] if plan.target_fields else ""
+    if not field:
+        return None
+    # This check reads the document's own boast — "the largest <entity>" — so
+    # it needs the word the registry calls its records. Guessing one would
+    # search for a phrase this document never uses.
+    entity = document.entity_label
+    if not entity:
         return None
     for record in document.records:
-        claim = _sentence_with(record.text, "largest national park")
-        area = next((fact for fact in record.number_facts if fact.field == "area"), None)
-        if not claim or not area or not record.country:
+        claim = _sentence_with(record.text, f"largest {entity}")
+        area = next((fact for fact in record.number_facts if fact.field == field), None)
+        if not claim or _is_negated(claim) or not area or not record.country:
             continue
         peers = [
             (other, fact)
-            for other, fact in _facts(document, "area")
+            for other, fact in _facts(document, field)
             if other.country == record.country and _area_km2(fact) > _area_km2(area)
         ]
         if not peers:
@@ -1560,7 +1578,7 @@ def _largest_claim_conflict(
         return ExecutionResult(
             question_id=plan.question_id,
             answer=(
-                f"The book calls {record.title} {record.country}'s largest national park "
+                f"The book calls {record.title} {record.country}'s largest {entity} "
                 f"and gives it as {area.raw_value} {area.unit}, but {other.title} is listed "
                 f"at {other_area.raw_value} {other_area.unit}, which is larger."
             ),
@@ -1572,40 +1590,6 @@ def _largest_claim_conflict(
     return None
 
 
-def _rank_conflict(plan: V3QuestionPlan, document: CompiledDocument) -> ExecutionResult | None:
-    folded = plan.question.casefold()
-    if "snowdon" not in folded or "rank" not in folded:
-        return None
-    snowdonia = next(
-        (record for record in document.records if "snowdonia" in record.title.casefold()),
-        None,
-    )
-    cairngorms = next(
-        (record for record in document.records if "cairngorms" in record.title.casefold()),
-        None,
-    )
-    if not snowdonia or not cairngorms:
-        return None
-    snowdon_claim = _sentence_with(snowdonia.text, "second-highest")
-    broader_claim = _sentence_with(cairngorms.text, "five of britain's six highest")
-    ben = next((fact for fact in cairngorms.number_facts if fact.field == "highest_point"), None)
-    height = re.search(r"At\s+(\d+)m,\s+Britain's second-highest", snowdon_claim)
-    if not snowdon_claim or not ben or not height:
-        return None
-    return ExecutionResult(
-        question_id=plan.question_id,
-        answer=(
-            f"The Snowdonia entry calls Snowdon ({height.group(1)}m) Britain's second-highest "
-            f"peak. The Cairngorms entry gives {ben.subject} as {ben.value:g}m and says the "
-            "park contains five of Britain's six highest summits, so Snowdon cannot be second."
-        ),
-        evidence=[snowdon_claim, broader_claim, _fact_evidence(cairngorms, ben)],
-        source_pages=sorted({ben.page, snowdonia.page_start}),
-        complete=True,
-        strategy=plan.strategy,
-    )
-
-
 def execute_structured(
     plan: V3QuestionPlan,
     document: CompiledDocument,
@@ -1615,25 +1599,18 @@ def execute_structured(
         _table_answer,
         _contents_answer,
         _catalog_answer,
+        # A contradiction can be checked in more than one way — a value in
+        # the wrong unit, a "largest in its country" boast, or any other
+        # claim a record's own figures disagree with. The narrowest, most
+        # exact check goes first; the generic one only gets a question none
+        # of the specific checks resolved.
+        _unit_outlier,
+        _largest_claim_conflict,
         _generic_claim_conflict,
         _dated_first_comparison,
         _generic_cross_border_relations,
         _generic_needle_answer,
         _composed_fact_answer,
-        _threshold_answer,
-        _superlative_answer,
-        _needle_answer,
-        _designation_absence_answer,
-        _threat_absence_answer,
-        _cross_border_answer,
-        _human_wilderness_answer,
-        _glaciation_synthesis_answer,
-        _species_recovery_answer,
-        _unesco_status_answer,
-        _climbing_firsts_answer,
-        _unit_outlier,
-        _largest_claim_conflict,
-        _rank_conflict,
     ):
         result = executor(plan, document)
         if result is not None and result.complete:

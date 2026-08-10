@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass
 
 from app.field_names import canonical_field_name
 from app.reduction.normalizer import parse_number
 from app.v3.models import (
+    CompiledDocument,
     EvidenceCandidate,
     EvidencePacket,
     ExecutionResult,
@@ -17,54 +19,46 @@ from app.v3.models import (
 )
 
 TERMINAL_STATUSES = {"evidence_found", "no_evidence"}
+
+
+@dataclass(frozen=True)
+class _Row:
+    """One record's value for the field a structured question targets."""
+
+    entity: str
+    value: float
+    unit: str
+    page: int
+    quote: str
+    # What the figure is measured on, and the group the record belongs to.
+    # A question asking which record leads usually also asks what the leading
+    # thing is called and where it is.
+    subject: str = ""
+    group: str = ""
+
+
+def _dominant_unit(rows) -> str:
+    """Return the unit the parsed rows agree on, if they agree at all."""
+    units = Counter(row.unit.casefold() for row in rows if row.unit)
+    if not units:
+        return ""
+    unit, count = units.most_common(1)[0]
+    return unit if count >= max(2, sum(units.values()) * 0.6) else ""
+
+
 COVERED_STATUSES = {*TERMINAL_STATUSES, "uncertain"}
-_CONCEPT_STOPWORDS = {
-    "across",
-    "all",
-    "book",
-    "different",
-    "does",
-    "each",
-    "entries",
-    "examples",
-    "explain",
-    "guide",
-    "handle",
-    "identify",
-    "overall",
-    "profile",
-    "profiles",
-    "station",
-    "stations",
-    "using",
-    "what",
-    "which",
-}
-_CONCEPT_EXPANSIONS = {
-    "fire": {"fire", "burn", "burning", "wildfire", "post-fire"},
-    "wildlife": {
-        "wildlife",
-        "species",
-        "population",
-        "recovery",
-        "reintroduction",
-        "conservation",
-        "threatened",
-    },
-    "livelihoods": {
-        "livelihood",
-        "families",
-        "community",
-        "communities",
-        "herding",
-        "cutting",
-        "fishers",
-        "traditional",
-        "councils",
-    },
-    "glaciation": {"glacier", "glacial", "ice age", "ice cap", "moraine"},
-    "border": {"border", "cross-border", "transboundary", "paired", "shared"},
-}
+# Words that carry no topic: interrogatives, and the words a question uses to
+# address the document itself rather than its subject.
+_CONCEPT_STOPWORDS = frozenset({
+    "about", "across", "all", "also", "among", "another", "any", "been",
+    "between", "both", "each", "either", "entries", "entry", "every",
+    "examples", "explain", "from", "give", "handle", "have", "here", "how",
+    "identify", "into", "its", "itself", "list", "many", "more", "most",
+    "much", "name", "over", "overall", "same", "several", "some", "such",
+    "taking", "than", "that", "their", "them", "then", "there", "these",
+    "they", "this", "those", "through", "using", "well", "were",
+    "what", "when", "where", "which", "while", "whole", "with", "within",
+})
 
 
 def _normalized_text(text: str) -> str:
@@ -78,9 +72,6 @@ def _concept_terms(question: str) -> set[str]:
         for term in re.findall(r"[a-z][a-z-]{3,}", folded)
         if term not in _CONCEPT_STOPWORDS
     }
-    for trigger, expansions in _CONCEPT_EXPANSIONS.items():
-        if trigger in folded or any(expansion in folded for expansion in expansions):
-            terms.update(expansions)
     return terms
 
 
@@ -158,12 +149,37 @@ def build_evidence_packet(
     )
 
 
+def _topic_example(
+    assessments: list,
+    document: CompiledDocument | None,
+) -> str:
+    """Name where a present topic is discussed, preferring substantive cover.
+
+    Establishing that the other options are present is half of what an absence
+    question asks, and naming the record that carries each one is the evidence
+    for that half; without it the claim is unsupported assertion.
+    """
+    if document is None:
+        return ""
+    titles = {record.record_id: record.title for record in document.records}
+    ranked = sorted(
+        (item for item in assessments if item.exact_quote),
+        key=lambda item: (item.level != "substantive", item.page),
+    )
+    for item in ranked:
+        title = titles.get(item.record_id, "")
+        if title and not title.startswith("Record "):
+            return title
+    return ""
+
+
 def reduce_absence(
     plan: V3QuestionPlan,
     results: list[V3MapResult],
     expected_record_ids: set[str],
     *,
     allow_partial: bool = False,
+    document: CompiledDocument | None = None,
 ) -> ExecutionResult | None:
     """Reduce a multiple-choice absence matrix, optionally as best effort."""
     if not plan.candidate_topics:
@@ -226,9 +242,13 @@ def reduce_absence(
     missing_topic = absent[0]
     present_topics = [topic for topic in plan.candidate_topics if topic != missing_topic]
     qualifier = "substantively discussed" if substantive_only else "mentioned or raised"
+    covered: list[str] = []
+    for topic in present_topics:
+        example = _topic_example(by_topic[topic], document)
+        covered.append(f"{topic} (for example at {example})" if example else topic)
     answer = (
         f"{missing_topic} is the only subject never {qualifier} anywhere in the book. "
-        f"The other subjects are covered: {', '.join(present_topics)}."
+        f"The other subjects are covered: {', '.join(covered)}."
     )
     evidence = [
         f"{topic}: {assessment.exact_quote} (page {assessment.page})"
@@ -274,11 +294,27 @@ def _candidate_number(candidate: EvidenceCandidate) -> float | None:
     return parse_number(candidate.exact_quote)
 
 
+def _readable(value: float) -> str:
+    """Write a figure for a reader. Fifteen million is not "1.5e+07"."""
+    if float(value).is_integer():
+        return f"{value:,.0f}"
+    return f"{value:,.4f}".rstrip("0").rstrip(".")
+
+
 def reduce_mapped_structure(
     plan: V3QuestionPlan,
     packet: EvidencePacket,
+    document: CompiledDocument | None = None,
 ) -> ExecutionResult | None:
-    """Apply count/argmax in Python when compile-time facts were unavailable."""
+    """Apply count/argmax over compiled facts, topped up by mapped evidence.
+
+    The compiler parses fact cards deterministically and quotes what it binds,
+    so where it bound a value that value is exact. The mapper re-reads prose
+    with a small model and misses rows that plainly state the figure, so using
+    it to re-derive what was already parsed throws away the reliable half of
+    the evidence. Compiled facts are therefore authoritative per record, and
+    mapped evidence only covers records the compiler left empty.
+    """
     if plan.strategy != Strategy.STRUCTURED_REDUCE or not packet.complete:
         return None
     target = str(plan.metadata.get("target_field", ""))
@@ -287,39 +323,83 @@ def reduce_mapped_structure(
     if not target or operation not in {"count", "argmax"}:
         return None
 
-    candidates: list[tuple[EvidenceCandidate, float]] = []
+    rows: dict[str, _Row] = {}
+    if document is not None:
+        for record in document.records:
+            fact = next(
+                (item for item in record.number_facts if item.field == target),
+                None,
+            )
+            if fact is not None:
+                rows[record.record_id] = _Row(
+                    entity=record.title or record.record_id,
+                    value=fact.value,
+                    unit=fact.unit,
+                    page=fact.page,
+                    quote=fact.quote,
+                    subject=fact.subject,
+                    group=record.country,
+                )
+    expected_unit = _dominant_unit(rows.values())
     for candidate in packet.evidence:
+        if candidate.record_id in rows:
+            continue
         if canonical_field_name(candidate.field) != target:
             continue
         value = _candidate_number(candidate)
-        if value is not None:
-            candidates.append((candidate, value))
-    if not candidates:
+        if value is None:
+            continue
+        # A figure stated in a different unit than the parsed rows use is a
+        # misread of some other number on the page, and one such value is
+        # enough to take over an extremum. Saying no unit at all contradicts
+        # nothing, and rejecting those would discard every row the mapper
+        # recovered for a record the parser missed.
+        stated = candidate.unit.casefold().strip()
+        if expected_unit and stated and stated != expected_unit:
+            continue
+        rows[candidate.record_id] = _Row(
+            entity=candidate.entity or candidate.record_id,
+            value=value,
+            unit=candidate.unit,
+            page=candidate.page,
+            quote=candidate.exact_quote,
+        )
+    if not rows:
         return None
 
     if operation == "count":
         selected = [
-            (candidate, value)
-            for candidate, value in candidates
-            if threshold is None or value >= float(threshold)
+            row
+            for row in rows.values()
+            if threshold is None or row.value >= float(threshold)
         ]
-        entities = list(
-            dict.fromkeys(candidate.entity or candidate.record_id for candidate, _ in selected)
-        )
+        entities = list(dict.fromkeys(row.entity for row in selected))
         answer = f"{len(entities)} entities qualify: {', '.join(entities)}."
-        used = [candidate for candidate, _ in selected]
+        used = selected
     else:
-        candidate, value = max(candidates, key=lambda item: item[1])
-        entity = candidate.entity or candidate.record_id
-        unit = f" {candidate.unit}" if candidate.unit else ""
-        answer = f"{entity} has the maximum reported value: {value:g}{unit}."
-        used = [candidate]
+        ranked = sorted(rows.values(), key=lambda row: row.value, reverse=True)
+        best = ranked[0]
+        unit = f" {best.unit}" if best.unit else ""
+        named = f" ({best.subject})" if best.subject else ""
+        where = f", in {best.group}" if best.group else ""
+        answer = (
+            f"{best.entity} reports the highest value: "
+            f"{_readable(best.value)}{unit}{named}{where}."
+        )
+        if len(ranked) > 1:
+            comparison = ", ".join(
+                f"{row.entity} at {_readable(row.value)}"
+                f"{f' {row.unit}' if row.unit else ''}"
+                for row in ranked[1:3]
+            )
+            answer += f" The next highest are {comparison}."
+        used = ranked[:3]
 
     return ExecutionResult(
         question_id=plan.question_id,
         answer=answer,
-        evidence=[item.exact_quote for item in used],
-        source_pages=sorted({item.page for item in used}),
+        evidence=[row.quote for row in used],
+        source_pages=sorted({row.page for row in used}),
         complete=True,
         strategy=plan.strategy,
     )

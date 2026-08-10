@@ -82,9 +82,9 @@ def test_inline_profiles_compile_complete_schema_and_non_profile_needles():
     assert document.registry_signals["missing_ordinals"] == 0
     assert document.field_catalog == [
         "annual_output",
-        "area",
-        "establishment_year",
-        "highest_point",
+        "commissioned",
+        "highest_crest_or_operating_point",
+        "monitored_project_area",
     ]
 
     questions = [
@@ -156,7 +156,11 @@ def test_ranked_table_grouping_and_argmax_exclude_unranked_entries():
     assert "Low human development: 1" in grouped.answer
     assert life is not None
     assert "Beta" in life.answer
-    assert "84.0 years" in life.answer
+    # The value and the column it came from, named the way the table names it
+    # rather than by a phrase written into the executor.
+    assert "84" in life.answer
+    assert "life expectancy" in life.answer
+    assert "Table 1" in life.answer
     assert "Monaco" not in life.answer
 
 

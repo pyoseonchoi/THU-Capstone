@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     # Vision fallback for low-text pages
     enable_vision_fallback: bool = False
 
+    # Per-record structured profiling. Deterministic reduction needs a fact
+    # table the layout parser alone cannot fill on unfamiliar documents.
+    # Questions are matched to compiled fields by meaning, not by wording.
+    enable_field_binding: bool = True
+    # Questions are routed to an operation by meaning, not by phrasing.
+    enable_shape_classification: bool = True
+    enable_record_profiling: bool = True
+    profile_min_coverage: float = Field(default=0.3, ge=0.0, le=1.0)
+    profile_vocabulary_sample: int = Field(default=6, ge=0, le=40)
+
     # Pipeline mode
     pipeline_mode: PipelineMode = PipelineMode.ADAPTIVE_HIERARCHICAL
     evaluation_mode: bool = False
@@ -84,7 +94,7 @@ class Settings(BaseSettings):
     prompt_version_planner: str = "v3"
     prompt_version_mapper: str = "v5"
     prompt_version_verifier: str = "v3"
-    prompt_version_answer: str = "v4"
+    prompt_version_answer: str = "v5"
 
     model_config = {
         # The workspace file holds secrets; the project file holds runtime config.
